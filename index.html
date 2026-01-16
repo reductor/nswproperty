@@ -172,11 +172,11 @@
             </div>
             <div class="stat-card">
                 <div class="stat-value" id="avgPrice">$0</div>
-                <div class="stat-label">Average Price</div>
+                <div class="stat-label">Latest 100 Avg Price</div>
             </div>
             <div class="stat-card">
                 <div class="stat-value" id="medianPrice">$0</div>
-                <div class="stat-label">Median Price</div>
+                <div class="stat-label">Latest 100 Median Price</div>
             </div>
             <div class="stat-card">
                 <div class="stat-value" id="priceRange">$0</div>
@@ -684,13 +684,29 @@
         }
 
         function updateStats(data, outliersRemoved = 0) {
-            const prices = data.map(item => item.price);
-            const totalSales = prices.length;
-            const avgPrice = prices.reduce((sum, price) => sum + price, 0) / prices.length;
-            const sortedPrices = [...prices].sort((a, b) => a - b);
-            const medianPrice = sortedPrices[Math.floor(sortedPrices.length / 2)];
-            const minPrice = Math.min(...prices);
-            const maxPrice = Math.max(...prices);
+            const totalSales = data.length;
+            
+            // Get latest 100 records for average and median
+            const sortedData = [...data].sort((a, b) => b.date - a.date);
+            const latestRecords = sortedData.slice(0, Math.min(100, data.length));
+            
+            let avgPrice, medianPrice;
+            if (latestRecords.length > 0) {
+                const latestPrices = latestRecords.map(item => item.price);
+                avgPrice = latestPrices.reduce((sum, price) => sum + price, 0) / latestPrices.length;
+                const sortedLatestPrices = [...latestPrices].sort((a, b) => a - b);
+                medianPrice = sortedLatestPrices[Math.floor(sortedLatestPrices.length / 2)];
+            } else {
+                // Fallback to all data if somehow no records
+                const allPrices = data.map(item => item.price);
+                avgPrice = allPrices.reduce((sum, price) => sum + price, 0) / allPrices.length;
+                const sortedAllPrices = [...allPrices].sort((a, b) => a - b);
+                medianPrice = sortedAllPrices[Math.floor(sortedAllPrices.length / 2)];
+            }
+            
+            const allPrices = data.map(item => item.price);
+            const minPrice = Math.min(...allPrices);
+            const maxPrice = Math.max(...allPrices);
             
             // Count property types
             const propertyTypes = {};
