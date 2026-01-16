@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NSW Property Sales Analyzer</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .controls {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        select {
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: white;
+            min-width: 250px;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+            margin: 20px 0;
+            display: none;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-card.property-types-card {
+            grid-column: span 2;
+            text-align: left;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-around;
+            align-items: center;
+            min-height: 60px;
+        }
+        .stat-value.property-types {
+            font-size: 12px;
+            line-height: 1.2;
+            color: #495057;
+            margin: 0 10px;
+            text-align: center;
+        }
+        .stat-label {
+            color: #666;
+            margin-top: 5px;
+        }
+        .chart-container {
+            position: relative;
+            height: 500px;
+            margin-top: 20px;
+        }
+        .error {
+            color: #dc3545;
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 20px 0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>NSW Property Sales Analyzer</h1>
+        
+        <div class="controls">
+            <label for="localitySelect">Select a Locality:</label>
+            <select id="localitySelect">
+                <option value="">Loading localities...</option>
+            </select>
+            
+            <div style="margin-top: 15px;">
+                <label>
+                    <input type="checkbox" id="showIndividualSales">
+                    Show Individual Purchases
+                </label>
+            </div>
+        </div>
+        
+        <div class="loading" id="loading">Loading property data...</div>
+        <div class="error" id="error"></div>
+        
+        <div class="stats" id="stats" style="display: none;">
+            <div class="stat-card">
+                <div class="stat-value" id="totalSales">0</div>
+                <div class="stat-label">Total Sales</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avgPrice">$0</div>
+                <div class="stat-label">Average Price</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="medianPrice">$0</div>
+                <div class="stat-label">Median Price</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="priceRange">$0</div>
+                <div class="stat-label">Price Range</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="outliersRemoved">0</div>
+                <div class="stat-label">Outliers Removed</div>
+            </div>
+            <div class="stat-card property-types-card">
+                <div class="stat-label" style="width: 100%; margin-bottom: 10px; text-align: center;">Property Types</div>
+                <div id="propertyTypes" style="display: flex; flex-wrap: wrap; justify-content: space-around; width: 100%;">-</div>
+            </div>
+        </div>
+        
+        <div class="chart-container">
+            <canvas id="priceChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let localities = [];
+
+        // Load localities on page load
+        window.addEventListener('load', loadLocalities);
+
+        async function loadLocalities() {
+            try {
+                const response = await fetch('localities.json');
+                localities = await response.json();
+                
+                const select = document.getElementById('localitySelect');
+                select.innerHTML = '<option value="">Select a locality...</option>';
+                
+                localities.forEach(locality => {
+                    const option = document.createElement('option');
+                    option.value = locality;
+                    option.textContent = locality.replace(/_/g, ' ');
+                    select.appendChild(option);
+                });
+                
+                select.addEventListener('change', handleLocalityChange);
+                
+                // Check URL for locality parameter and restore selection
+                const urlParams = new URLSearchParams(window.location.search);
+                const localityFromUrl = urlParams.get('locality');
+                if (localityFromUrl && localities.includes(localityFromUrl)) {
+                    select.value = localityFromUrl;
+                    // Trigger the change event to load the data
+                    const event = new Event('change');
+                    select.dispatchEvent(event);
+                }
+                
+            } catch (error) {
+                showError('Failed to load localities: ' + error.message);
+            }
+        }
+
+        async function handleLocalityChange(event) {
+            const selectedLocality = event.target.value;
+            
+            // Update URL with selected locality
+            updateURL(selectedLocality);
+            
+            if (!selectedLocality) {
+                hideChart();
+                return;
+            }
+            
+            showLoading(true);
+            hideError();
+            
+            try {
+                const datFile = `localities/${selectedLocality}.DAT`;
+                const response = await fetch(datFile);
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch ${datFile}`);
+                }
+                
+                const content = await response.text();
+                const result = parsePropertyData(content);
+                
+                if (result.data.length === 0) {
+                    throw new Error('No property data found in the selected locality');
+                }
+                
+                displayChart(result.data, selectedLocality);
+                updateStats(result.data, result.outliersRemoved);
+                
+                // Setup checkbox listener
+                const checkbox = document.getElementById('showIndividualSales');
+                checkbox.onchange = () => {
+                    displayChart(result.data, selectedLocality);
+                };
+                
+            } catch (error) {
+                showError('Failed to load property data: ' + error.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function updateURL(locality) {
+            const url = new URL(window.location);
+            if (locality) {
+                url.searchParams.set('locality', locality);
+            } else {
+                url.searchParams.delete('locality');
+            }
+            // Update URL without reloading the page
+            window.history.replaceState({}, '', url);
+        }
+
+        function parsePropertyData(content) {
+            const lines = content.split('\n');
+            const properties = [];
+            
+            for (const line of lines) {
+                if (line.trim().startsWith('B;')) {
+                    const fields = line.split(';');
+                    
+                    if (fields.length >= 19) {
+                        const dateStr = fields[14].trim(); // Field 15 (0-indexed as 14)
+                        const priceStr = fields[15].trim(); // Field 16 (0-indexed as 15)
+                        const propertyType = fields[18].trim(); // Field 19 (0-indexed as 18)
+                        
+                        if (dateStr && priceStr && priceStr !== '0' && !isNaN(priceStr)) {
+                            const date = parseDate(dateStr);
+                            const price = parseInt(priceStr);
+                            
+                            // Only include data from 2002 onwards and reasonable price range
+                            if (date && price > 10000 && price < 100000000 && date.getFullYear() >= 2002) {
+                                properties.push({ date, price, propertyType });
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Filter outliers using IQR method
+            const originalCount = properties.length;
+            const filteredProperties = filterOutliers(properties);
+            const outliersRemoved = originalCount - filteredProperties.length;
+            
+            // Sort by date
+            const sortedData = filteredProperties.sort((a, b) => a.date - b.date);
+            
+            return {
+                data: sortedData,
+                outliersRemoved: outliersRemoved
+            };
+        }
+
+        function filterOutliers(data) {
+            if (data.length < 4) return data; // Need at least 4 data points for IQR
+            
+            const prices = data.map(item => item.price).sort((a, b) => a - b);
+            const q1Index = Math.floor(prices.length * 0.25);
+            const q3Index = Math.floor(prices.length * 0.75);
+            const q1 = prices[q1Index];
+            const q3 = prices[q3Index];
+            const iqr = q3 - q1;
+            
+            // More aggressive filtering for low outliers, standard for high outliers
+            const lowerBound = Math.max(10000, q1 - 0.5 * iqr); // Minimum $10,000 and less aggressive IQR
+            const upperBound = q3 + 1.5 * iqr;
+            
+            // Filter out outliers
+            const filtered = data.filter(item => 
+                item.price >= lowerBound && item.price <= upperBound
+            );
+            
+            console.log(`Original data points: ${data.length}, After outlier removal: ${filtered.length}`);
+            console.log(`Price range: $${lowerBound.toLocaleString()} - $${upperBound.toLocaleString()}`);
+            
+            return filtered;
+        }
+
+        function parseDate(dateStr) {
+            if (dateStr.length !== 8) return null;
+            
+            const year = parseInt(dateStr.substring(0, 4));
+            const month = parseInt(dateStr.substring(4, 6)) - 1; // Month is 0-indexed
+            const day = parseInt(dateStr.substring(6, 8));
+            
+            const date = new Date(year, month, day);
+            return isNaN(date.getTime()) ? null : date;
+        }
+
+        function displayChart(data, locality) {
+            const ctx = document.getElementById('priceChart').getContext('2d');
+            
+            if (chart) {
+                chart.destroy();
+            }
+            
+            const showIndividual = document.getElementById('showIndividualSales').checked;
+            
+            // Group data by property type
+            const dataByPropertyType = groupDataByPropertyType(data);
+            const propertyTypes = Object.keys(dataByPropertyType);
+            
+            const datasets = [];
+            
+            // Define colors for different property types
+            const colors = [
+                { bg: 'rgba(255, 99, 132, 0.6)', border: 'rgba(255, 99, 132, 1)' },
+                { bg: 'rgba(54, 162, 235, 0.6)', border: 'rgba(54, 162, 235, 1)' },
+                { bg: 'rgba(75, 192, 192, 0.6)', border: 'rgba(75, 192, 192, 1)' },
+                { bg: 'rgba(255, 206, 86, 0.6)', border: 'rgba(255, 206, 86, 1)' },
+                { bg: 'rgba(153, 102, 255, 0.6)', border: 'rgba(153, 102, 255, 1)' },
+                { bg: 'rgba(255, 159, 64, 0.6)', border: 'rgba(255, 159, 64, 1)' },
+                { bg: 'rgba(199, 199, 199, 0.6)', border: 'rgba(199, 199, 199, 1)' },
+                { bg: 'rgba(83, 102, 255, 0.6)', border: 'rgba(83, 102, 255, 1)' }
+            ];
+            
+            // Add individual sales datasets if checkbox is checked
+            if (showIndividual) {
+                propertyTypes.forEach((propertyType, index) => {
+                    const typeData = dataByPropertyType[propertyType];
+                    const color = colors[index % colors.length];
+                    
+                    datasets.push({
+                        label: `${propertyType || 'Unknown'} Sales`,
+                        data: typeData.map(item => ({ x: item.date, y: item.price })),
+                        backgroundColor: color.bg,
+                        borderColor: color.border,
+                        borderWidth: 1,
+                        pointRadius: 3,
+                        hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
+                    });
+                });
+            }
+            
+            // Add trend lines for each property type
+            propertyTypes.forEach((propertyType, index) => {
+                const typeData = dataByPropertyType[propertyType];
+                if (typeData.length >= 3) { // Only create trend line if we have enough data
+                    const monthlyData = groupByMonth(typeData);
+                    const linearTrendData = calculateLinearTrend(typeData);
+                    const color = colors[index % colors.length];
+                    
+                    // Create interpolated trend data that matches monthly data points for area fill
+                    const interpolatedTrend = interpolateTrendForMonthly(monthlyData, linearTrendData);
+                    
+                    // Calculate area data for above and below trend
+                    const { aboveData, belowData } = calculateAreaData(monthlyData, interpolatedTrend);
+                    
+                    // Area above trend (green tint)
+                    if (aboveData.length > 0) {
+                        datasets.push({
+                            label: `${propertyType} Above Trend`,
+                            data: aboveData,
+                            type: 'line',
+                            backgroundColor: 'rgba(76, 175, 80, 0.3)',
+                            borderColor: 'rgba(76, 175, 80, 0.1)',
+                            borderWidth: 1,
+                            fill: true,
+                            tension: 0.1,
+                            pointRadius: 0,
+                            order: 10,
+                            hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
+                        });
+                    }
+                    
+                    // Area below trend (red tint)
+                    if (belowData.length > 0) {
+                        datasets.push({
+                            label: `${propertyType} Below Trend`,
+                            data: belowData,
+                            type: 'line',
+                            backgroundColor: 'rgba(244, 67, 54, 0.3)',
+                            borderColor: 'rgba(244, 67, 54, 0.1)',
+                            borderWidth: 1,
+                            fill: true,
+                            tension: 0.1,
+                            pointRadius: 0,
+                            order: 10,
+                            hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
+                        });
+                    }
+                    
+                    // Monthly median trend line
+                    datasets.push({
+                        label: `${propertyType || 'Unknown'} Trend`,
+                        data: monthlyData,
+                        type: 'line',
+                        backgroundColor: color.bg,
+                        borderColor: color.border,
+                        borderWidth: 3,
+                        fill: false,
+                        tension: 0.1,
+                        pointRadius: 4,
+                        hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
+                    });
+                    
+                    // Linear regression trend line for this property type
+                    datasets.push({
+                        label: `${propertyType || 'Unknown'} Overall Trend`,
+                        data: linearTrendData,
+                        type: 'line',
+                        backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                        borderColor: color.border,
+                        borderWidth: 2,
+                        fill: false,
+                        tension: 0,
+                        pointRadius: 0,
+                        borderDash: [10, 5],
+                        hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
+                    });
+                }
+            });
+            
+            chart = new Chart(ctx, {
+                type: 'scatter',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `Property Prices in ${locality.replace(/_/g, ' ')}`
+                        },
+                        legend: {
+                            display: true
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'month',
+                                displayFormats: {
+                                    month: 'MMM yyyy'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Price (AUD)'
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return '$' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'nearest'
+                    }
+                }
+            });
+            
+            document.getElementById('stats').style.display = 'grid';
+        }
+
+        function interpolateTrendForMonthly(monthlyData, linearTrendData) {
+            if (linearTrendData.length < 2 || monthlyData.length === 0) return [];
+            
+            const [start, end] = linearTrendData;
+            const slope = (end.y - start.y) / (end.x.getTime() - start.x.getTime());
+            
+            return monthlyData.map(point => ({
+                x: point.x,
+                y: start.y + slope * (point.x.getTime() - start.x.getTime())
+            }));
+        }
+
+        function calculateAreaData(monthlyData, interpolatedTrend) {
+            const abovePoints = [];
+            const belowPoints = [];
+            
+            // Create continuous areas by connecting points
+            for (let i = 0; i < monthlyData.length; i++) {
+                const monthly = monthlyData[i];
+                const trend = interpolatedTrend[i];
+                
+                if (monthly.y >= trend.y) {
+                    // Point is above trend
+                    abovePoints.push({ x: monthly.x, y: trend.y }); // Start from trend line
+                    abovePoints.push({ x: monthly.x, y: monthly.y }); // Go to monthly point
+                } else {
+                    // Point is below trend
+                    belowPoints.push({ x: monthly.x, y: monthly.y }); // Start from monthly point
+                    belowPoints.push({ x: monthly.x, y: trend.y }); // Go to trend line
+                }
+            }
+            
+            // Create filled areas by connecting all above/below points
+            const aboveData = [];
+            const belowData = [];
+            
+            if (abovePoints.length > 0) {
+                // Create bottom boundary (trend line)
+                for (let i = 0; i < monthlyData.length; i++) {
+                    if (monthlyData[i].y >= interpolatedTrend[i].y) {
+                        aboveData.push({ x: monthlyData[i].x, y: interpolatedTrend[i].y });
+                    }
+                }
+                // Create top boundary (monthly data) in reverse
+                for (let i = monthlyData.length - 1; i >= 0; i--) {
+                    if (monthlyData[i].y >= interpolatedTrend[i].y) {
+                        aboveData.push({ x: monthlyData[i].x, y: monthlyData[i].y });
+                    }
+                }
+            }
+            
+            if (belowPoints.length > 0) {
+                // Create top boundary (trend line)
+                for (let i = 0; i < monthlyData.length; i++) {
+                    if (monthlyData[i].y < interpolatedTrend[i].y) {
+                        belowData.push({ x: monthlyData[i].x, y: interpolatedTrend[i].y });
+                    }
+                }
+                // Create bottom boundary (monthly data) in reverse
+                for (let i = monthlyData.length - 1; i >= 0; i--) {
+                    if (monthlyData[i].y < interpolatedTrend[i].y) {
+                        belowData.push({ x: monthlyData[i].x, y: monthlyData[i].y });
+                    }
+                }
+            }
+            
+            return { aboveData, belowData };
+        }
+
+        function groupDataByPropertyType(data) {
+            const grouped = {};
+            const allowedTypes = ['RESIDENCE', 'VACANT LAND', 'COMMERCIAL'];
+            
+            data.forEach(item => {
+                const propertyType = item.propertyType || 'Unknown';
+                
+                // Only include allowed property types
+                if (allowedTypes.includes(propertyType)) {
+                    if (!grouped[propertyType]) {
+                        grouped[propertyType] = [];
+                    }
+                    grouped[propertyType].push(item);
+                }
+            });
+            
+            return grouped;
+        }
+
+        function calculateLinearTrend(data) {
+            if (data.length < 2) return [];
+            
+            // Convert dates to numeric values (time in milliseconds)
+            const dataPoints = data.map(item => ({
+                x: item.date.getTime(),
+                y: item.price
+            }));
+            
+            // Calculate linear regression
+            const n = dataPoints.length;
+            const sumX = dataPoints.reduce((sum, point) => sum + point.x, 0);
+            const sumY = dataPoints.reduce((sum, point) => sum + point.y, 0);
+            const sumXY = dataPoints.reduce((sum, point) => sum + point.x * point.y, 0);
+            const sumXX = dataPoints.reduce((sum, point) => sum + point.x * point.x, 0);
+            
+            // Calculate slope (m) and y-intercept (b) for y = mx + b
+            const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+            const intercept = (sumY - slope * sumX) / n;
+            
+            // Create trend line data points
+            const sortedData = [...data].sort((a, b) => a.date - b.date);
+            const startDate = sortedData[0].date;
+            const endDate = sortedData[sortedData.length - 1].date;
+            
+            // Extend the trend line slightly beyond the data range
+            const timeRange = endDate.getTime() - startDate.getTime();
+            const extendedStart = new Date(startDate.getTime() - timeRange * 0.05);
+            const extendedEnd = new Date(endDate.getTime() + timeRange * 0.05);
+            
+            return [
+                {
+                    x: extendedStart,
+                    y: Math.max(0, slope * extendedStart.getTime() + intercept)
+                },
+                {
+                    x: extendedEnd,
+                    y: Math.max(0, slope * extendedEnd.getTime() + intercept)
+                }
+            ];
+        }
+
+        function groupByQuarter(data) {
+            const quarterlyGroups = {};
+            
+            data.forEach(item => {
+                const year = item.date.getFullYear();
+                const quarter = Math.floor(item.date.getMonth() / 3) + 1;
+                const quarterKey = `${year}-Q${quarter}`;
+                
+                if (!quarterlyGroups[quarterKey]) {
+                    quarterlyGroups[quarterKey] = [];
+                }
+                quarterlyGroups[quarterKey].push(item.price);
+            });
+            
+            return Object.keys(quarterlyGroups).map(quarterKey => {
+                const [year, quarter] = quarterKey.split('-');
+                const quarterNum = parseInt(quarter.substring(1));
+                const prices = quarterlyGroups[quarterKey].sort((a, b) => a - b);
+                const medianPrice = prices[Math.floor(prices.length / 2)];
+                
+                // Use middle month of quarter for x-axis positioning
+                const middleMonth = (quarterNum - 1) * 3 + 1; // Q1=Jan(1), Q2=Apr(4), Q3=Jul(7), Q4=Oct(10)
+                
+                return {
+                    x: new Date(parseInt(year), middleMonth, 15),
+                    y: medianPrice
+                };
+            }).sort((a, b) => a.x - b.x);
+        }
+
+        function groupByMonth(data) {
+            const monthlyGroups = {};
+            
+            data.forEach(item => {
+                const monthKey = `${item.date.getFullYear()}-${item.date.getMonth()}`;
+                if (!monthlyGroups[monthKey]) {
+                    monthlyGroups[monthKey] = [];
+                }
+                monthlyGroups[monthKey].push(item.price);
+            });
+            
+            return Object.keys(monthlyGroups).map(monthKey => {
+                const [year, month] = monthKey.split('-').map(Number);
+                const prices = monthlyGroups[monthKey].sort((a, b) => a - b);
+                const medianPrice = prices[Math.floor(prices.length / 2)];
+                
+                return {
+                    x: new Date(year, month, 15), // Use 15th of month
+                    y: medianPrice
+                };
+            }).sort((a, b) => a.x - b.x);
+        }
+
+        function updateStats(data, outliersRemoved = 0) {
+            const prices = data.map(item => item.price);
+            const totalSales = prices.length;
+            const avgPrice = prices.reduce((sum, price) => sum + price, 0) / prices.length;
+            const sortedPrices = [...prices].sort((a, b) => a - b);
+            const medianPrice = sortedPrices[Math.floor(sortedPrices.length / 2)];
+            const minPrice = Math.min(...prices);
+            const maxPrice = Math.max(...prices);
+            
+            // Count property types
+            const propertyTypes = {};
+            data.forEach(item => {
+                if (item.propertyType) {
+                    propertyTypes[item.propertyType] = (propertyTypes[item.propertyType] || 0) + 1;
+                }
+            });
+            
+            const topPropertyTypes = Object.entries(propertyTypes)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 3)
+                .map(([type, count]) => `<div class="stat-value property-types"><strong>${type}</strong><br><small>(${count} sales)</small></div>`)
+                .join('');
+            
+            document.getElementById('totalSales').textContent = totalSales.toLocaleString();
+            document.getElementById('avgPrice').textContent = '$' + Math.round(avgPrice).toLocaleString();
+            document.getElementById('medianPrice').textContent = '$' + medianPrice.toLocaleString();
+            document.getElementById('priceRange').textContent = 
+                '$' + minPrice.toLocaleString() + ' - $' + maxPrice.toLocaleString();
+            document.getElementById('outliersRemoved').textContent = outliersRemoved.toLocaleString();
+            document.getElementById('propertyTypes').innerHTML = topPropertyTypes || '<div class="stat-value property-types">Unknown</div>';
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function hideChart() {
+            if (chart) {
+                chart.destroy();
+                chart = null;
+            }
+            document.getElementById('stats').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
