@@ -94,6 +94,35 @@
             margin: 20px 0;
             display: none;
         }
+        .attribution {
+            margin-top: 40px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-left: 4px solid #007bff;
+            border-radius: 4px;
+        }
+        .attribution h3 {
+            margin-top: 0;
+            color: #333;
+            font-size: 18px;
+        }
+        .attribution p {
+            margin: 8px 0;
+            color: #555;
+            line-height: 1.4;
+        }
+        .attribution a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .attribution a:hover {
+            text-decoration: underline;
+        }
+        .attribution em {
+            font-style: italic;
+            color: #666;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
@@ -146,6 +175,13 @@
         
         <div class="chart-container">
             <canvas id="priceChart"></canvas>
+        </div>
+        
+        <div class="attribution">
+            <h3>Data Source</h3>
+            <p>This analysis uses NSW Valuer General's Bulk Property Sales Information, acquired on 16th January 2026.</p>
+            <p>The data is licensed under a Creative Commons license and can be downloaded from:</p>
+            <p><a href="https://valuation.property.nsw.gov.au/embed/propertySalesInformation" target="_blank">NSW Valuer General - Property Sales Information</a></p>
         </div>
     </div>
 
