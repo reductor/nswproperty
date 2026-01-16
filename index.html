@@ -373,49 +373,31 @@
                     const linearTrendData = calculateLinearTrend(typeData);
                     const color = colors[index % colors.length];
                     
-                    // Create interpolated trend data that matches monthly data points for area fill
+                    // Create interpolated trend data that matches monthly data points
                     const interpolatedTrend = interpolateTrendForMonthly(monthlyData, linearTrendData);
                     
-                    // Calculate area data for above and below trend
-                    const { aboveData, belowData } = calculateAreaData(monthlyData, interpolatedTrend);
+                    const isHidden = propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL';
                     
-                    // Area above trend (green tint)
-                    if (aboveData.length > 0) {
-                        datasets.push({
-                            label: `${propertyType} Above Trend`,
-                            data: aboveData,
-                            type: 'line',
-                            backgroundColor: 'rgba(76, 175, 80, 0.3)',
-                            borderColor: 'rgba(76, 175, 80, 0.1)',
-                            borderWidth: 1,
-                            fill: true,
-                            tension: 0.1,
-                            pointRadius: 0,
-                            order: 10,
-                            hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
-                        });
-                    }
-                    
-                    // Area below trend (red tint)
-                    if (belowData.length > 0) {
-                        datasets.push({
-                            label: `${propertyType} Below Trend`,
-                            data: belowData,
-                            type: 'line',
-                            backgroundColor: 'rgba(244, 67, 54, 0.3)',
-                            borderColor: 'rgba(244, 67, 54, 0.1)',
-                            borderWidth: 1,
-                            fill: true,
-                            tension: 0.1,
-                            pointRadius: 0,
-                            order: 10,
-                            hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
-                        });
-                    }
-                    
-                    // Monthly median trend line
+                    // Overall trend line (render first as base)
                     datasets.push({
-                        label: `${propertyType || 'Unknown'} Trend`,
+                        label: `${propertyType || 'Unknown'}`,
+                        data: interpolatedTrend,
+                        type: 'line',
+                        backgroundColor: 'rgba(0, 0, 0, 0.1)',
+                        borderColor: color.border,
+                        borderWidth: 2,
+                        fill: { above: "rgba(255, 0, 0, 0.2)", below: "rgba(0, 0, 255, 0.2)", target: "+1"},
+                        tension: 0.1,
+                        pointRadius: 0,
+                        borderDash: [10, 5],
+                        hidden: isHidden,
+                        legendGroup: propertyType,
+                        trendType: 'overall'
+                    });
+                
+                    // Monthly median trend line (on top)
+                    datasets.push({
+                        label: `${propertyType || 'Unknown'}`,
                         data: monthlyData,
                         type: 'line',
                         backgroundColor: color.bg,
@@ -424,22 +406,9 @@
                         fill: false,
                         tension: 0.1,
                         pointRadius: 4,
-                        hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
-                    });
-                    
-                    // Linear regression trend line for this property type
-                    datasets.push({
-                        label: `${propertyType || 'Unknown'} Overall Trend`,
-                        data: linearTrendData,
-                        type: 'line',
-                        backgroundColor: 'rgba(0, 0, 0, 0.1)',
-                        borderColor: color.border,
-                        borderWidth: 2,
-                        fill: false,
-                        tension: 0,
-                        pointRadius: 0,
-                        borderDash: [10, 5],
-                        hidden: propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL'
+                        hidden: isHidden,
+                        legendGroup: propertyType,
+                        trendType: 'monthly'
                     });
                 }
             });
@@ -458,7 +427,38 @@
                             text: `Property Prices in ${locality.replace(/_/g, ' ')}`
                         },
                         legend: {
-                            display: true
+                            display: true,
+                            onClick: function(e, legendItem, legend) {
+                                const chart = legend.chart;
+                                const datasetIndex = legendItem.datasetIndex;
+                                const dataset = chart.data.datasets[datasetIndex];
+                                
+                                // Toggle visibility for all datasets with the same legendGroup
+                                if (dataset.legendGroup) {
+                                    chart.data.datasets.forEach((ds, index) => {
+                                        if (ds.legendGroup === dataset.legendGroup) {
+                                            const meta = chart.getDatasetMeta(index);
+                                            meta.hidden = meta.hidden === null ? !chart.data.datasets[index].hidden : null;
+                                        }
+                                    });
+                                } else {
+                                    // Default behavior for individual sales datasets
+                                    const meta = chart.getDatasetMeta(datasetIndex);
+                                    meta.hidden = meta.hidden === null ? !chart.data.datasets[datasetIndex].hidden : null;
+                                }
+                                
+                                chart.update();
+                            },
+                            labels: {
+                                filter: function(legendItem, chartData) {
+                                    // Only show one legend item per property type for trend lines
+                                    const dataset = chartData.datasets[legendItem.datasetIndex];
+                                    if (dataset.legendGroup && dataset.trendType === 'overall') {
+                                        return false; // Hide overall trend from legend
+                                    }
+                                    return true;
+                                }
+                            }
                         }
                     },
                     scales: {
@@ -509,62 +509,6 @@
             }));
         }
 
-        function calculateAreaData(monthlyData, interpolatedTrend) {
-            const abovePoints = [];
-            const belowPoints = [];
-            
-            // Create continuous areas by connecting points
-            for (let i = 0; i < monthlyData.length; i++) {
-                const monthly = monthlyData[i];
-                const trend = interpolatedTrend[i];
-                
-                if (monthly.y >= trend.y) {
-                    // Point is above trend
-                    abovePoints.push({ x: monthly.x, y: trend.y }); // Start from trend line
-                    abovePoints.push({ x: monthly.x, y: monthly.y }); // Go to monthly point
-                } else {
-                    // Point is below trend
-                    belowPoints.push({ x: monthly.x, y: monthly.y }); // Start from monthly point
-                    belowPoints.push({ x: monthly.x, y: trend.y }); // Go to trend line
-                }
-            }
-            
-            // Create filled areas by connecting all above/below points
-            const aboveData = [];
-            const belowData = [];
-            
-            if (abovePoints.length > 0) {
-                // Create bottom boundary (trend line)
-                for (let i = 0; i < monthlyData.length; i++) {
-                    if (monthlyData[i].y >= interpolatedTrend[i].y) {
-                        aboveData.push({ x: monthlyData[i].x, y: interpolatedTrend[i].y });
-                    }
-                }
-                // Create top boundary (monthly data) in reverse
-                for (let i = monthlyData.length - 1; i >= 0; i--) {
-                    if (monthlyData[i].y >= interpolatedTrend[i].y) {
-                        aboveData.push({ x: monthlyData[i].x, y: monthlyData[i].y });
-                    }
-                }
-            }
-            
-            if (belowPoints.length > 0) {
-                // Create top boundary (trend line)
-                for (let i = 0; i < monthlyData.length; i++) {
-                    if (monthlyData[i].y < interpolatedTrend[i].y) {
-                        belowData.push({ x: monthlyData[i].x, y: interpolatedTrend[i].y });
-                    }
-                }
-                // Create bottom boundary (monthly data) in reverse
-                for (let i = monthlyData.length - 1; i >= 0; i--) {
-                    if (monthlyData[i].y < interpolatedTrend[i].y) {
-                        belowData.push({ x: monthlyData[i].x, y: monthlyData[i].y });
-                    }
-                }
-            }
-            
-            return { aboveData, belowData };
-        }
 
         function groupDataByPropertyType(data) {
             const grouped = {};
