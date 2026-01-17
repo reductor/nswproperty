@@ -200,6 +200,7 @@
             <div style="margin-top: 15px;">
                 <label>Long-term Trend Type:</label><br>
                 <label class="trend-type-label" data-tooltip="Straight line through data points using mathematical regression. Good for identifying consistent long-term growth or decline patterns."><input type="radio" name="trendType" value="linear" checked> Linear Regression</label>
+                <label class="trend-type-label" style="margin-left: 15px;" data-tooltip="Simple compound annual growth rate line from earliest to latest data point. Shows the constant growth rate needed to reach current levels."><input type="radio" name="trendType" value="cagr"> CAGR Line</label>
                 <label class="trend-type-label" style="margin-left: 15px;" data-tooltip="Curved trend line using moving averages to create smooth patterns. Shows gentle market cycles and turning points."><input type="radio" name="trendType" value="polynomial"> Polynomial (Curved)</label>
                 <label class="trend-type-label" style="margin-left: 15px;" data-tooltip="Rolling average that smooths out short-term noise. Follows market movements closely while reducing volatility spikes."><input type="radio" name="trendType" value="moving"> Moving Average</label>
                 <label class="trend-type-label" style="margin-left: 15px;" data-tooltip="Exponential smoothing that adapts to recent trends. Reacts quickly to market changes while maintaining smooth progression."><input type="radio" name="trendType" value="smoothed"> Smoothed</label>
@@ -237,6 +238,10 @@
             <div class="stat-card">
                 <div class="stat-value" id="outliersRemoved">0</div>
                 <div class="stat-label">Outliers Removed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="trendGrowth">-</div>
+                <div class="stat-label">Trend Growth (% p.a.)</div>
             </div>
             <div class="stat-card property-types-card">
                 <div class="stat-label" style="width: 100%; margin-bottom: 10px; text-align: center;">Property Types</div>
@@ -368,7 +373,7 @@
                 
                 function updateTimeFrameControls() {
                     const selectedTrendType = document.querySelector('input[name="trendType"]:checked').value;
-                    const isRegressionBased = selectedTrendType === 'linear' || selectedTrendType === 'polynomial';
+                    const isRegressionBased = selectedTrendType === 'linear' || selectedTrendType === 'polynomial' || selectedTrendType === 'cagr';
                     const timeFrameRadios = document.querySelectorAll('input[name="trendTimeFrame"]');
                     
                     timeFrameRadios.forEach(tfRadio => {
@@ -529,6 +534,9 @@
         }
 
         function displayChart(data, locality) {
+            // Store data globally for growth rate calculations
+            window.currentLocalityData = data;
+            
             const ctx = document.getElementById('priceChart').getContext('2d');
             
             if (chart) {
@@ -601,6 +609,9 @@
                     switch(selectedTrendType) {
                         case 'polynomial':
                             linearTrendData = calculatePolynomialTrend(typeData, selectedTimeFrame);
+                            break;
+                        case 'cagr':
+                            linearTrendData = calculateCAGRTrend(typeData, selectedTimeFrame);
                             break;
                         case 'moving':
                             linearTrendData = calculateMovingAverageTrend(typeData, null); // Always use all data
@@ -744,6 +755,42 @@
                 }
             });
             
+            // Calculate and display trend growth rate for RESIDENCE data
+            const residenceData = dataByPropertyType['RESIDENCE'];
+            if (residenceData && residenceData.length >= 3) {
+                const selectedTrendType = document.querySelector('input[name="trendType"]:checked').value;
+                const selectedTimeFrame = document.querySelector('input[name="trendTimeFrame"]:checked').value;
+                
+                let trendDataForGrowth;
+                switch(selectedTrendType) {
+                    case 'polynomial':
+                        trendDataForGrowth = calculatePolynomialTrend(residenceData, selectedTimeFrame);
+                        break;
+                    case 'cagr':
+                        trendDataForGrowth = calculateCAGRTrend(residenceData, selectedTimeFrame);
+                        break;
+                    case 'moving':
+                        trendDataForGrowth = calculateMovingAverageTrend(residenceData, null);
+                        break;
+                    case 'smoothed':
+                        trendDataForGrowth = calculateSmoothedTrend(residenceData, null);
+                        break;
+                    case 'linear':
+                    default:
+                        trendDataForGrowth = calculateLinearTrend(residenceData, selectedTimeFrame);
+                        break;
+                }
+                
+                const growthRate = calculateTrendGrowthRate(trendDataForGrowth, selectedTrendType, selectedTimeFrame);
+                const growthDisplay = growthRate !== null ? 
+                    (growthRate >= 0 ? '+' : '') + growthRate.toFixed(1) + '%' : 
+                    'N/A';
+                
+                document.getElementById('trendGrowth').textContent = growthDisplay;
+            } else {
+                document.getElementById('trendGrowth').textContent = 'N/A';
+            }
+            
             document.getElementById('stats').style.display = 'grid';
         }
 
@@ -822,11 +869,50 @@
             return [
                 {
                     x: extendedStart,
-                    y: Math.max(0, slope * extendedStart.getTime() + intercept)
+                    y: Math.max(1000, slope * extendedStart.getTime() + intercept) // Minimum $1000 to prevent zero values
                 },
                 {
                     x: extendedEnd,
-                    y: Math.max(0, slope * extendedEnd.getTime() + intercept)
+                    y: Math.max(1000, slope * extendedEnd.getTime() + intercept) // Minimum $1000 to prevent zero values
+                }
+            ];
+        }
+
+        function calculateCAGRTrend(data, timeFrameYears = null) {
+            if (data.length < 2) return [];
+            
+            // Filter data based on time frame if specified
+            let filteredData = data;
+            if (timeFrameYears && timeFrameYears !== 'all') {
+                const cutoffDate = new Date();
+                cutoffDate.setFullYear(cutoffDate.getFullYear() - parseInt(timeFrameYears));
+                filteredData = data.filter(item => item.date >= cutoffDate);
+            }
+            
+            if (filteredData.length < 2) return [];
+            
+            // Sort data to get earliest and latest points
+            const sortedData = [...filteredData].sort((a, b) => a.date - b.date);
+            const startPoint = sortedData[0];
+            const endPoint = sortedData[sortedData.length - 1];
+            
+            // Calculate CAGR and create a straight line
+            const timeSpanMs = endPoint.date.getTime() - startPoint.date.getTime();
+            const timeSpanYears = timeSpanMs / (1000 * 60 * 60 * 24 * 365.25);
+            
+            if (timeSpanYears <= 0) return [];
+            
+            const cagr = Math.pow(endPoint.price / startPoint.price, 1 / timeSpanYears);
+            
+            // Create trend line points from start to end based on CAGR
+            return [
+                {
+                    x: startPoint.date,
+                    y: startPoint.price
+                },
+                {
+                    x: endPoint.date,
+                    y: endPoint.price
                 }
             ];
         }
@@ -1009,6 +1095,151 @@
                     y: medianPrice
                 };
             }).sort((a, b) => a.x - b.x);
+        }
+
+        function calculateTrendGrowthRate(trendData, selectedTrendType, selectedTimeFrame) {
+            if (!trendData || trendData.length < 2) {
+                console.log('Trend growth: insufficient data points', trendData?.length);
+                return null;
+            }
+            
+            let startValue, endValue, timeSpanYears;
+            
+            if (selectedTrendType === 'linear') {
+                // For linear regression, calculate growth from trend line values at data endpoints
+                const residenceData = window.currentLocalityData ? 
+                    window.currentLocalityData.filter(item => item.propertyType === 'RESIDENCE') : [];
+                
+                if (residenceData.length < 2) {
+                    console.log('Linear trend growth: insufficient residence data, found', residenceData.length, 'records');
+                    console.log('Available property types:', window.currentLocalityData ? 
+                        [...new Set(window.currentLocalityData.map(item => item.propertyType))] : 'No data');
+                    return null;
+                }
+                
+                let filteredData = residenceData;
+                
+                // Apply the same time filtering that was used to generate the trend
+                if (selectedTimeFrame && selectedTimeFrame !== 'all') {
+                    const years = parseInt(selectedTimeFrame);
+                    const cutoffDate = new Date();
+                    cutoffDate.setFullYear(cutoffDate.getFullYear() - years);
+                    filteredData = residenceData.filter(item => item.date >= cutoffDate);
+                }
+                
+                if (filteredData.length < 2) {
+                    console.log('Linear trend growth: insufficient filtered data');
+                    return null;
+                }
+                
+                // Calculate the linear regression coefficients for the filtered data
+                const dataPoints = filteredData.map(item => ({
+                    x: item.date.getTime(),
+                    y: item.price
+                }));
+                
+                const n = dataPoints.length;
+                const sumX = dataPoints.reduce((sum, point) => sum + point.x, 0);
+                const sumY = dataPoints.reduce((sum, point) => sum + point.y, 0);
+                const sumXY = dataPoints.reduce((sum, point) => sum + point.x * point.y, 0);
+                const sumXX = dataPoints.reduce((sum, point) => sum + point.x * point.x, 0);
+                
+                const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+                const intercept = (sumY - slope * sumX) / n;
+                
+                // Get the actual date range of the filtered data
+                const sortedData = [...filteredData].sort((a, b) => a.date - b.date);
+                const startDate = sortedData[0].date;
+                const endDate = sortedData[sortedData.length - 1].date;
+                
+                // Calculate trend line values at these endpoints
+                startValue = Math.max(1000, slope * startDate.getTime() + intercept);
+                endValue = Math.max(1000, slope * endDate.getTime() + intercept);
+                
+                const timeSpanMs = endDate.getTime() - startDate.getTime();
+                timeSpanYears = timeSpanMs / (1000 * 60 * 60 * 24 * 365.25);
+                
+                console.log('Linear trend growth calculation:', {
+                    selectedTimeFrame,
+                    dataPoints: n,
+                    startDate,
+                    endDate,
+                    startValue,
+                    endValue,
+                    timeSpanYears,
+                    slope,
+                    expectedGrowth: ((endValue / startValue) ** (1 / timeSpanYears) - 1) * 100
+                });
+            } else if (selectedTrendType === 'cagr') {
+                // For CAGR, use the trend data directly (start and end points)
+                const sortedTrend = [...trendData].sort((a, b) => a.x.getTime() - b.x.getTime());
+                startValue = sortedTrend[0].y;
+                endValue = sortedTrend[sortedTrend.length - 1].y;
+                
+                const timeSpanMs = sortedTrend[sortedTrend.length - 1].x.getTime() - sortedTrend[0].x.getTime();
+                timeSpanYears = timeSpanMs / (1000 * 60 * 60 * 24 * 365.25);
+                
+                console.log('CAGR trend growth calculation:', {
+                    selectedTimeFrame,
+                    startValue,
+                    endValue,
+                    timeSpanYears,
+                    expectedGrowth: ((endValue / startValue) ** (1 / timeSpanYears) - 1) * 100
+                });
+            } else {
+                // For other trend types, use actual data endpoints
+                const sortedTrend = [...trendData].sort((a, b) => a.x.getTime() - b.x.getTime());
+                
+                // For time-based trends, use the specified timeframe
+                if (selectedTimeFrame && selectedTimeFrame !== 'all') {
+                    const years = parseInt(selectedTimeFrame);
+                    const cutoffDate = new Date();
+                    cutoffDate.setFullYear(cutoffDate.getFullYear() - years);
+                    
+                    const recentTrend = sortedTrend.filter(point => point.x >= cutoffDate);
+                    if (recentTrend.length >= 2) {
+                        startValue = recentTrend[0].y;
+                        endValue = recentTrend[recentTrend.length - 1].y;
+                        timeSpanYears = years;
+                    } else {
+                        return null;
+                    }
+                } else {
+                    startValue = sortedTrend[0].y;
+                    endValue = sortedTrend[sortedTrend.length - 1].y;
+                    
+                    const timeSpanMs = sortedTrend[sortedTrend.length - 1].x.getTime() - sortedTrend[0].x.getTime();
+                    timeSpanYears = timeSpanMs / (1000 * 60 * 60 * 24 * 365.25);
+                }
+            }
+            
+            // Ensure we have valid values - be more lenient with validation
+            if (timeSpanYears <= 0) {
+                console.log('Trend growth validation failed: invalid time span', timeSpanYears);
+                return null;
+            }
+            
+            // Handle zero start value by using a small positive value
+            if (startValue <= 0) {
+                console.log('Adjusting zero start value to prevent division issues');
+                startValue = Math.min(1000, endValue * 0.01); // Use 1% of end value or $1000, whichever is smaller
+            }
+            
+            // Calculate compound annual growth rate (CAGR)
+            const cagr = Math.pow(endValue / startValue, 1 / timeSpanYears) - 1;
+            
+            console.log('CAGR calculation:', {
+                cagr,
+                percentage: cagr * 100,
+                isValid: !isNaN(cagr) && isFinite(cagr)
+            });
+            
+            // Sanity check for reasonable values - be more lenient
+            if (isNaN(cagr) || !isFinite(cagr)) {
+                return null;
+            }
+            
+            return cagr * 100; // Convert to percentage
         }
 
         function updateStats(data, outliersRemoved = 0) {
