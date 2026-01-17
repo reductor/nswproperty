@@ -191,6 +191,12 @@
             </div>
             
             <div style="margin-top: 15px;">
+                <label>Pricing Display:</label><br>
+                <label><input type="radio" name="pricingType" value="total" checked> Total Price</label>
+                <label style="margin-left: 15px;"><input type="radio" name="pricingType" value="per_sqm"> Price per m² (when area available)</label>
+            </div>
+            
+            <div style="margin-top: 15px;">
                 <label>Trend Period:</label><br>
                 <label><input type="radio" name="trendPeriod" value="monthly"> Monthly</label>
                 <label style="margin-left: 15px;"><input type="radio" name="trendPeriod" value="quarterly"> Quarterly</label>
@@ -347,10 +353,19 @@
                 const trendPeriodRadios = document.querySelectorAll('input[name="trendPeriod"]');
                 const trendTimeFrameRadios = document.querySelectorAll('input[name="trendTimeFrame"]');
                 const trendTypeRadios = document.querySelectorAll('input[name="trendType"]');
+                const pricingTypeRadios = document.querySelectorAll('input[name="pricingType"]');
                 
                 checkbox.onchange = () => {
                     displayChart(result.data, selectedLocality);
                 };
+                
+                pricingTypeRadios.forEach(radio => {
+                    radio.onchange = () => {
+                        invalidatePricingCache();
+                        displayChart(result.data, selectedLocality);
+                        updateStats(result.data, result.outliersRemoved);
+                    };
+                });
                 
                 trendPeriodRadios.forEach(radio => {
                     radio.onchange = () => {
@@ -464,8 +479,39 @@
         }
 
         function parsePropertyData(content) {
+    /*
+    NSW Property Sales .DAT File Field Structure (Current Format):
+    B-Record Fields (semicolon-separated):
+    0:  Record Type (B)
+    1:  District Code
+    2:  Property ID
+    3:  Sale Counter
+    4:  Download Date/Time
+    5:  Property Name
+    6:  Unit Number
+    7:  House Number
+    8:  Street Name
+    9:  Property Locality (Suburb) - USED FOR GROUPING
+    10: Post Code
+    11: Area
+    12: Area Type
+    13: Contract Date
+    14: Settlement Date (CCYYMMDD) - USED FOR CHART X-AXIS
+    15: Purchase Price - USED FOR CHART Y-AXIS
+    16: Zoning
+    17: Nature of Property
+    18: Primary Purpose (RESIDENCE/COMMERCIAL/etc) - USED FOR PROPERTY TYPE FILTERING
+    19: Strata Lot Number
+    20: Component Code
+    21: Sale Code
+    22: % Interest of Sale
+    23: Dealing Number
+    
+    Note: Archive files are pre-converted to this format by group_by_locality.py
+    */
             const lines = content.split('\n');
             const properties = [];
+            const areaTypeStats = {}; // Track area types found
             
             for (const line of lines) {
                 if (line.trim().startsWith('B;')) {
@@ -475,14 +521,68 @@
                         const dateStr = fields[14].trim(); // Field 15 (0-indexed as 14)
                         const priceStr = fields[15].trim(); // Field 16 (0-indexed as 15)
                         const propertyType = fields[18].trim(); // Field 19 (0-indexed as 18)
+                        const areaStr = fields[11].trim(); // Field 12 (0-indexed as 11)
+                        const areaType = fields[12].trim(); // Field 13 (0-indexed as 12)
                         
                         if (dateStr && priceStr && priceStr !== '0' && !isNaN(priceStr)) {
                             const date = parseDate(dateStr);
                             const price = parseInt(priceStr);
                             
-                            // Only include data from 2002 onwards and reasonable price range
+                            // Only include data from 1990 onwards and reasonable price range
                             if (date && price > 10000 && price < 100000000 && date.getFullYear() >= 1990) {
-                                properties.push({ date, price, propertyType });
+                                const property = { 
+                                    date, 
+                                    price, 
+                                    propertyType,
+                                    area: null,
+                                    areaType: null,
+                                    _pricePerSqm: null,
+                                    _hasAreaData: null
+                                };
+                                
+                                // Only parse area data if we have it
+                                if (areaStr && areaType) {
+                                    property.area = !isNaN(areaStr) ? parseFloat(areaStr) : null;
+                                    property.areaType = areaType;
+                                    // More inclusive: allow any area type if area > 0
+                                    // Common types: 'M' (square meters), 'H' (hectares), 'A' (acres), etc.
+                                    property._hasAreaData = property.area && property.area > 0;
+                                    
+                                    // Track area types for debugging
+                                    if (property._hasAreaData) {
+                                        areaTypeStats[areaType] = (areaTypeStats[areaType] || 0) + 1;
+                                    }
+                                }
+                                
+                                // Add lazy getter for pricePerSqm
+                                Object.defineProperty(property, 'pricePerSqm', {
+                                    get() {
+                                        if (this._pricePerSqm === null && this._hasAreaData) {
+                                            let areaInSqm = this.area;
+                                            
+                                            // Convert different area types to square meters
+                                            switch(this.areaType) {
+                                                case 'M': // Already in square meters
+                                                    break;
+                                                case 'H': // Hectares
+                                                    areaInSqm = this.area * 10000;
+                                                    break;
+                                                case 'A': // Acres  
+                                                    areaInSqm = this.area * 4046.86;
+                                                    break;
+                                                default:
+                                                    // For unknown area types, assume square meters
+                                                    console.log(`Unknown area type: ${this.areaType}, assuming square meters`);
+                                                    break;
+                                            }
+                                            
+                                            this._pricePerSqm = this.price / areaInSqm;
+                                        }
+                                        return this._pricePerSqm;
+                                    }
+                                });
+                                
+                                properties.push(property);
                             }
                         }
                     }
@@ -496,6 +596,12 @@
             
             // Sort by date
             const sortedData = filteredProperties.sort((a, b) => a.date - b.date);
+            
+            // Log area type statistics for debugging
+            const propertiesWithArea = properties.filter(p => p._hasAreaData).length;
+            console.log(`Area data statistics for this locality:`);
+            console.log(`Properties with area data: ${propertiesWithArea} of ${properties.length} (${(propertiesWithArea/properties.length*100).toFixed(1)}%)`);
+            console.log('Area types found:', areaTypeStats);
             
             return {
                 data: sortedData,
@@ -550,9 +656,26 @@
             }
             
             const showIndividual = document.getElementById('showIndividualSales').checked;
+            const pricingType = getCachedPricingMode();
+            
+            // Filter data for price per sqm if selected (do this once)
+            let chartData = data;
+            if (pricingType === 'per_sqm') {
+                chartData = data.filter(item => item._hasAreaData);
+                if (chartData.length === 0) {
+                    // Show message if no area data available
+                    const errorDiv = document.getElementById('error');
+                    errorDiv.textContent = 'No properties with area data (area type "M") available for this locality.';
+                    errorDiv.style.display = 'block';
+                    return;
+                } else {
+                    // Clear any previous error
+                    document.getElementById('error').style.display = 'none';
+                }
+            }
             
             // Group data by property type
-            const dataByPropertyType = groupDataByPropertyType(data);
+            const dataByPropertyType = groupDataByPropertyType(chartData);
             const propertyTypes = Object.keys(dataByPropertyType);
             
             const datasets = [];
@@ -691,7 +814,7 @@
                     plugins: {
                         title: {
                             display: true,
-                            text: `Property Prices in ${locality.replace(/_/g, ' ')}`
+                            text: `Property ${pricingType === 'per_sqm' ? 'Price per m²' : 'Prices'} in ${locality.replace(/_/g, ' ')}`
                         },
                         legend: {
                             display: true,
@@ -745,11 +868,15 @@
                         y: {
                             title: {
                                 display: true,
-                                text: 'Price (AUD)'
+                                text: pricingType === 'per_sqm' ? 'Price per m² (AUD)' : 'Price (AUD)'
                             },
                             ticks: {
                                 callback: function(value) {
-                                    return '$' + value.toLocaleString();
+                                    if (pricingType === 'per_sqm') {
+                                        return '$' + Math.round(value).toLocaleString() + '/m²';
+                                    } else {
+                                        return '$' + value.toLocaleString();
+                                    }
                                 }
                             }
                         }
@@ -832,6 +959,25 @@
             return grouped;
         }
 
+        // Cache pricing mode to avoid repeated DOM queries
+        let cachedPricingMode = null;
+        
+        function getCachedPricingMode() {
+            if (cachedPricingMode === null) {
+                cachedPricingMode = document.querySelector('input[name="pricingType"]:checked').value;
+            }
+            return cachedPricingMode;
+        }
+        
+        function invalidatePricingCache() {
+            cachedPricingMode = null;
+        }
+        
+        function getPriceValue(item) {
+            const pricingType = getCachedPricingMode();
+            return pricingType === 'per_sqm' ? (item.pricePerSqm || item.price) : item.price;
+        }
+
         function calculateLinearTrend(data, timeFrameYears = null) {
             if (data.length < 2) return [];
             
@@ -848,7 +994,7 @@
             // Convert dates to numeric values (time in milliseconds)
             const dataPoints = filteredData.map(item => ({
                 x: item.date.getTime(),
-                y: item.price
+                y: getPriceValue(item)
             }));
             
             // Calculate linear regression
@@ -908,17 +1054,17 @@
             
             if (timeSpanYears <= 0) return [];
             
-            const cagr = Math.pow(endPoint.price / startPoint.price, 1 / timeSpanYears);
+            const cagr = Math.pow(getPriceValue(endPoint) / getPriceValue(startPoint), 1 / timeSpanYears);
             
             // Create trend line points from start to end based on CAGR
             return [
                 {
                     x: startPoint.date,
-                    y: startPoint.price
+                    y: getPriceValue(startPoint)
                 },
                 {
                     x: endPoint.date,
-                    y: endPoint.price
+                    y: getPriceValue(endPoint)
                 }
             ];
         }
@@ -944,7 +1090,7 @@
             // Create smoothed points using simple moving average
             for (let i = windowSize; i < sortedData.length - windowSize; i += windowSize) {
                 const window = sortedData.slice(i - windowSize, i + windowSize);
-                const avgPrice = window.reduce((sum, item) => sum + item.price, 0) / window.length;
+                const avgPrice = window.reduce((sum, item) => sum + getPriceValue(item), 0) / window.length;
                 smoothedPoints.push({
                     x: sortedData[i].date,
                     y: avgPrice
@@ -978,7 +1124,7 @@
             const smoothed = [];
             
             // Initialize with first value
-            let smoothedValue = sortedData[0].price;
+            let smoothedValue = getPriceValue(sortedData[0]);
             smoothed.push({
                 x: sortedData[0].date,
                 y: smoothedValue
@@ -986,7 +1132,7 @@
             
             // Apply exponential smoothing
             for (let i = 1; i < sortedData.length; i++) {
-                smoothedValue = alpha * sortedData[i].price + (1 - alpha) * smoothedValue;
+                smoothedValue = alpha * getPriceValue(sortedData[i]) + (1 - alpha) * smoothedValue;
                 smoothed.push({
                     x: sortedData[i].date,
                     y: smoothedValue
@@ -1016,7 +1162,7 @@
             
             for (let i = windowSize - 1; i < sortedData.length; i++) {
                 const window = sortedData.slice(i - windowSize + 1, i + 1);
-                const avgPrice = window.reduce((sum, item) => sum + item.price, 0) / window.length;
+                const avgPrice = window.reduce((sum, item) => sum + getPriceValue(item), 0) / window.length;
                 
                 movingAvg.push({
                     x: sortedData[i].date,
@@ -1038,7 +1184,7 @@
                 if (!quarterlyGroups[quarterKey]) {
                     quarterlyGroups[quarterKey] = [];
                 }
-                quarterlyGroups[quarterKey].push(item.price);
+                quarterlyGroups[quarterKey].push(getPriceValue(item));
             });
             
             return Object.keys(quarterlyGroups).map(quarterKey => {
@@ -1066,7 +1212,7 @@
                 if (!yearlyGroups[year]) {
                     yearlyGroups[year] = [];
                 }
-                yearlyGroups[year].push(item.price);
+                yearlyGroups[year].push(getPriceValue(item));
             });
             
             return Object.keys(yearlyGroups).map(year => {
@@ -1088,7 +1234,7 @@
                 if (!monthlyGroups[monthKey]) {
                     monthlyGroups[monthKey] = [];
                 }
-                monthlyGroups[monthKey].push(item.price);
+                monthlyGroups[monthKey].push(getPriceValue(item));
             });
             
             return Object.keys(monthlyGroups).map(monthKey => {
@@ -1334,29 +1480,52 @@
         }
 
         function updateStats(data, outliersRemoved = 0) {
-            const totalSales = data.length;
+            const pricingType = getCachedPricingMode();
+            
+            // Filter data for price per sqm mode if needed (reuse filter logic)
+            let statsData = data;
+            if (pricingType === 'per_sqm') {
+                statsData = data.filter(item => item._hasAreaData);
+            }
+            
+            const totalSales = statsData.length;
             
             // Get latest 100 records for average and median
-            const sortedData = [...data].sort((a, b) => b.date - a.date);
-            const latestRecords = sortedData.slice(0, Math.min(100, data.length));
+            const sortedData = [...statsData].sort((a, b) => b.date - a.date);
+            const latestRecords = sortedData.slice(0, Math.min(100, statsData.length));
             
             let avgPrice, medianPrice;
             if (latestRecords.length > 0) {
-                const latestPrices = latestRecords.map(item => item.price);
+                // Optimize: extract prices once and reuse
+                const latestPrices = latestRecords.map(item => getPriceValue(item));
                 avgPrice = latestPrices.reduce((sum, price) => sum + price, 0) / latestPrices.length;
                 const sortedLatestPrices = [...latestPrices].sort((a, b) => a - b);
                 medianPrice = sortedLatestPrices[Math.floor(sortedLatestPrices.length / 2)];
+                
+                // Reuse sorted prices for min/max instead of mapping again
+                const minPrice = sortedLatestPrices[0];
+                const maxPrice = sortedLatestPrices[sortedLatestPrices.length - 1];
+                
+                // Update display
+                const priceSuffix = pricingType === 'per_sqm' ? '/m²' : '';
+                document.getElementById('totalSales').textContent = totalSales.toLocaleString();
+                document.getElementById('avgPrice').textContent = '$' + Math.round(avgPrice).toLocaleString() + priceSuffix;
+                document.getElementById('medianPrice').textContent = '$' + Math.round(medianPrice).toLocaleString() + priceSuffix;
+                document.getElementById('priceRange').textContent = 
+                    '$' + Math.round(minPrice).toLocaleString() + priceSuffix + ' - $' + Math.round(maxPrice).toLocaleString() + priceSuffix;
             } else {
                 // Fallback to all data if somehow no records
-                const allPrices = data.map(item => item.price);
+                const allPrices = statsData.map(item => getPriceValue(item));
                 avgPrice = allPrices.reduce((sum, price) => sum + price, 0) / allPrices.length;
                 const sortedAllPrices = [...allPrices].sort((a, b) => a - b);
                 medianPrice = sortedAllPrices[Math.floor(sortedAllPrices.length / 2)];
+                
+                const priceSuffix = pricingType === 'per_sqm' ? '/m²' : '';
+                document.getElementById('avgPrice').textContent = '$' + Math.round(avgPrice).toLocaleString() + priceSuffix;
+                document.getElementById('medianPrice').textContent = '$' + Math.round(medianPrice).toLocaleString() + priceSuffix;
+                document.getElementById('priceRange').textContent = 
+                    '$' + Math.round(sortedAllPrices[0]).toLocaleString() + priceSuffix + ' - $' + Math.round(sortedAllPrices[sortedAllPrices.length - 1]).toLocaleString() + priceSuffix;
             }
-            
-            const allPrices = data.map(item => item.price);
-            const minPrice = Math.min(...allPrices);
-            const maxPrice = Math.max(...allPrices);
             
             // Count property types
             const propertyTypes = {};
@@ -1372,11 +1541,6 @@
                 .map(([type, count]) => `<div class="stat-value property-types"><strong>${type}</strong><br><small>(${count} sales)</small></div>`)
                 .join('');
             
-            document.getElementById('totalSales').textContent = totalSales.toLocaleString();
-            document.getElementById('avgPrice').textContent = '$' + Math.round(avgPrice).toLocaleString();
-            document.getElementById('medianPrice').textContent = '$' + medianPrice.toLocaleString();
-            document.getElementById('priceRange').textContent = 
-                '$' + minPrice.toLocaleString() + ' - $' + maxPrice.toLocaleString();
             document.getElementById('outliersRemoved').textContent = outliersRemoved.toLocaleString();
             document.getElementById('propertyTypes').innerHTML = topPropertyTypes || '<div class="stat-value property-types">Unknown</div>';
         }
