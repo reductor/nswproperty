@@ -142,6 +142,35 @@
         .source-code a:hover {
             text-decoration: underline;
         }
+        input:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        input:disabled + label {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .tooltip {
+            position: absolute;
+            background-color: #333;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            max-width: 250px;
+            z-index: 1000;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+            line-height: 1.3;
+        }
+        .tooltip.show {
+            opacity: 1;
+        }
+        .trend-type-label {
+            position: relative;
+            cursor: help;
+        }
     </style>
 </head>
 <body>
@@ -166,6 +195,22 @@
                 <label><input type="radio" name="trendPeriod" value="monthly"> Monthly</label>
                 <label style="margin-left: 15px;"><input type="radio" name="trendPeriod" value="quarterly"> Quarterly</label>
                 <label style="margin-left: 15px;"><input type="radio" name="trendPeriod" value="yearly" checked> Yearly</label>
+            </div>
+            
+            <div style="margin-top: 15px;">
+                <label>Long-term Trend Type:</label><br>
+                <label class="trend-type-label" data-tooltip="Straight line through data points using mathematical regression. Good for identifying consistent long-term growth or decline patterns."><input type="radio" name="trendType" value="linear" checked> Linear Regression</label>
+                <label class="trend-type-label" style="margin-left: 15px;" data-tooltip="Curved trend line using moving averages to create smooth patterns. Shows gentle market cycles and turning points."><input type="radio" name="trendType" value="polynomial"> Polynomial (Curved)</label>
+                <label class="trend-type-label" style="margin-left: 15px;" data-tooltip="Rolling average that smooths out short-term noise. Follows market movements closely while reducing volatility spikes."><input type="radio" name="trendType" value="moving"> Moving Average</label>
+                <label class="trend-type-label" style="margin-left: 15px;" data-tooltip="Exponential smoothing that adapts to recent trends. Reacts quickly to market changes while maintaining smooth progression."><input type="radio" name="trendType" value="smoothed"> Smoothed</label>
+            </div>
+            
+            <div style="margin-top: 15px;">
+                <label>Long-term Trend Based On:</label><br>
+                <label><input type="radio" name="trendTimeFrame" value="all"> All Data</label>
+                <label style="margin-left: 15px;"><input type="radio" name="trendTimeFrame" value="5"> Last 5 Years</label>
+                <label style="margin-left: 15px;"><input type="radio" name="trendTimeFrame" value="10"> Last 10 Years</label>
+                <label style="margin-left: 15px;"><input type="radio" name="trendTimeFrame" value="15" checked> Last 15 Years</label>
             </div>
         </div>
         
@@ -288,17 +333,106 @@
                 
                 // Setup event listeners
                 const checkbox = document.getElementById('showIndividualSales');
-                const radioButtons = document.querySelectorAll('input[name="trendPeriod"]');
+                const trendPeriodRadios = document.querySelectorAll('input[name="trendPeriod"]');
+                const trendTimeFrameRadios = document.querySelectorAll('input[name="trendTimeFrame"]');
+                const trendTypeRadios = document.querySelectorAll('input[name="trendType"]');
                 
                 checkbox.onchange = () => {
                     displayChart(result.data, selectedLocality);
                 };
                 
-                radioButtons.forEach(radio => {
+                trendPeriodRadios.forEach(radio => {
                     radio.onchange = () => {
                         displayChart(result.data, selectedLocality);
                     };
                 });
+                
+                trendTimeFrameRadios.forEach(radio => {
+                    radio.onchange = () => {
+                        displayChart(result.data, selectedLocality);
+                    };
+                });
+                
+                trendTypeRadios.forEach(radio => {
+                    radio.onchange = () => {
+                        updateTimeFrameControls();
+                        displayChart(result.data, selectedLocality);
+                    };
+                });
+                
+                // Set initial state of time frame controls
+                updateTimeFrameControls();
+                
+                // Setup tooltips for trend type labels
+                setupTooltips();
+                
+                function updateTimeFrameControls() {
+                    const selectedTrendType = document.querySelector('input[name="trendType"]:checked').value;
+                    const isRegressionBased = selectedTrendType === 'linear' || selectedTrendType === 'polynomial';
+                    const timeFrameRadios = document.querySelectorAll('input[name="trendTimeFrame"]');
+                    
+                    timeFrameRadios.forEach(tfRadio => {
+                        tfRadio.disabled = !isRegressionBased;
+                        // Find the label for this radio button and update its style
+                        const label = tfRadio.parentElement;
+                        if (label && label.tagName === 'LABEL') {
+                            label.style.opacity = isRegressionBased ? '1' : '0.5';
+                            label.style.cursor = isRegressionBased ? 'pointer' : 'not-allowed';
+                        }
+                    });
+                }
+                
+                function setupTooltips() {
+                    const tooltip = document.createElement('div');
+                    tooltip.className = 'tooltip';
+                    document.body.appendChild(tooltip);
+                    
+                    const trendLabels = document.querySelectorAll('.trend-type-label');
+                    
+                    trendLabels.forEach(label => {
+                        label.addEventListener('mouseenter', (e) => {
+                            const tooltipText = e.target.getAttribute('data-tooltip');
+                            if (tooltipText) {
+                                tooltip.textContent = tooltipText;
+                                tooltip.classList.add('show');
+                                
+                                // Position tooltip near the element, accounting for scroll
+                                const rect = e.target.getBoundingClientRect();
+                                const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                                const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+                                
+                                tooltip.style.left = (rect.left + scrollLeft + rect.width / 2 - tooltip.offsetWidth / 2) + 'px';
+                                tooltip.style.top = (rect.bottom + scrollTop + 10) + 'px';
+                            }
+                        });
+                        
+                        label.addEventListener('mouseleave', (e) => {
+                            // Add a small delay to prevent flickering
+                            setTimeout(() => {
+                                // Check if mouse is not over the tooltip
+                                if (!tooltip.matches(':hover') && !e.target.matches(':hover')) {
+                                    tooltip.classList.remove('show');
+                                }
+                            }, 100);
+                        });
+                        
+                        label.addEventListener('mousemove', (e) => {
+                            // Only update position if tooltip is visible
+                            if (tooltip.classList.contains('show')) {
+                                const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                                const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+                                
+                                tooltip.style.left = (e.clientX + scrollLeft - tooltip.offsetWidth / 2) + 'px';
+                                tooltip.style.top = (e.clientY + scrollTop + 15) + 'px';
+                            }
+                        });
+                    });
+                    
+                    // Also hide tooltip when mouse leaves the tooltip itself
+                    tooltip.addEventListener('mouseleave', () => {
+                        tooltip.classList.remove('show');
+                    });
+                }
                 
             } catch (error) {
                 showError('Failed to load property data: ' + error.message);
@@ -443,8 +577,10 @@
             propertyTypes.forEach((propertyType, index) => {
                 const typeData = dataByPropertyType[propertyType];
                 if (typeData.length >= 3) { // Only create trend line if we have enough data
-                    // Get selected trend period
+                    // Get selected trend period and type
                     const selectedPeriod = document.querySelector('input[name="trendPeriod"]:checked').value;
+                    const selectedTimeFrame = document.querySelector('input[name="trendTimeFrame"]:checked').value;
+                    const selectedTrendType = document.querySelector('input[name="trendType"]:checked').value;
                     
                     let trendData;
                     switch(selectedPeriod) {
@@ -460,11 +596,35 @@
                             break;
                     }
                     
-                    const linearTrendData = calculateLinearTrend(typeData);
+                    // Calculate trend based on selected type
+                    let linearTrendData;
+                    switch(selectedTrendType) {
+                        case 'polynomial':
+                            linearTrendData = calculatePolynomialTrend(typeData, selectedTimeFrame);
+                            break;
+                        case 'moving':
+                            linearTrendData = calculateMovingAverageTrend(typeData, null); // Always use all data
+                            break;
+                        case 'smoothed':
+                            linearTrendData = calculateSmoothedTrend(typeData, null); // Always use all data
+                            break;
+                        case 'linear':
+                        default:
+                            linearTrendData = calculateLinearTrend(typeData, selectedTimeFrame);
+                            break;
+                    }
+                    
                     const color = colors[index % colors.length];
                     
                     // Create interpolated trend data that matches the selected period data points
-                    const interpolatedTrend = interpolateTrendForPeriod(trendData, linearTrendData);
+                    let interpolatedTrend;
+                    if (selectedTrendType === 'moving' || selectedTrendType === 'smoothed') {
+                        // For moving average and smoothed, use the trend data directly
+                        interpolatedTrend = linearTrendData;
+                    } else {
+                        // For linear and polynomial, interpolate to match period data points
+                        interpolatedTrend = interpolateTrendForPeriod(trendData, linearTrendData);
+                    }
                     
                     const isHidden = propertyType === 'VACANT LAND' || propertyType === 'COMMERCIAL';
                     
@@ -476,8 +636,8 @@
                         backgroundColor: 'rgba(0, 0, 0, 0.1)',
                         borderColor: color.border,
                         borderWidth: 2,
-                        fill: { above: "rgba(255, 0, 0, 0.2)", below: "rgba(0, 0, 255, 0.2)", target: "+1"},
-                        tension: 0.1,
+                        fill: (selectedTrendType === 'moving' || selectedTrendType === 'smoothed') ? false : { above: "rgba(255, 0, 0, 0.2)", below: "rgba(0, 0, 255, 0.2)", target: "+1"},
+                        tension: (selectedTrendType === 'moving' || selectedTrendType === 'smoothed') ? 0.4 : 0.1,
                         pointRadius: 0,
                         borderDash: [10, 5],
                         hidden: isHidden,
@@ -619,11 +779,21 @@
             return grouped;
         }
 
-        function calculateLinearTrend(data) {
+        function calculateLinearTrend(data, timeFrameYears = null) {
             if (data.length < 2) return [];
             
+            // Filter data based on time frame if specified
+            let filteredData = data;
+            if (timeFrameYears && timeFrameYears !== 'all') {
+                const cutoffDate = new Date();
+                cutoffDate.setFullYear(cutoffDate.getFullYear() - parseInt(timeFrameYears));
+                filteredData = data.filter(item => item.date >= cutoffDate);
+            }
+            
+            if (filteredData.length < 2) return [];
+            
             // Convert dates to numeric values (time in milliseconds)
-            const dataPoints = data.map(item => ({
+            const dataPoints = filteredData.map(item => ({
                 x: item.date.getTime(),
                 y: item.price
             }));
@@ -639,10 +809,10 @@
             const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
             const intercept = (sumY - slope * sumX) / n;
             
-            // Create trend line data points
-            const sortedData = [...data].sort((a, b) => a.date - b.date);
-            const startDate = sortedData[0].date;
-            const endDate = sortedData[sortedData.length - 1].date;
+            // Create trend line data points - extend across the full original data range
+            const sortedOriginalData = [...data].sort((a, b) => a.date - b.date);
+            const startDate = sortedOriginalData[0].date;
+            const endDate = sortedOriginalData[sortedOriginalData.length - 1].date;
             
             // Extend the trend line slightly beyond the data range
             const timeRange = endDate.getTime() - startDate.getTime();
@@ -659,6 +829,110 @@
                     y: Math.max(0, slope * extendedEnd.getTime() + intercept)
                 }
             ];
+        }
+
+        function calculatePolynomialTrend(data, timeFrameYears = null) {
+            if (data.length < 5) return [];
+            
+            // Filter data based on time frame if specified
+            let filteredData = data;
+            if (timeFrameYears && timeFrameYears !== 'all') {
+                const cutoffDate = new Date();
+                cutoffDate.setFullYear(cutoffDate.getFullYear() - parseInt(timeFrameYears));
+                filteredData = data.filter(item => item.date >= cutoffDate);
+            }
+            
+            if (filteredData.length < 5) return [];
+            
+            // Use moving averages to create a smoother polynomial trend
+            const sortedData = [...filteredData].sort((a, b) => a.date - b.date);
+            const windowSize = Math.max(3, Math.floor(sortedData.length / 10));
+            const smoothedPoints = [];
+            
+            // Create smoothed points using simple moving average
+            for (let i = windowSize; i < sortedData.length - windowSize; i += windowSize) {
+                const window = sortedData.slice(i - windowSize, i + windowSize);
+                const avgPrice = window.reduce((sum, item) => sum + item.price, 0) / window.length;
+                smoothedPoints.push({
+                    x: sortedData[i].date,
+                    y: avgPrice
+                });
+            }
+            
+            if (smoothedPoints.length < 3) {
+                // Fall back to linear if not enough points
+                return calculateLinearTrend(data, timeFrameYears);
+            }
+            
+            return smoothedPoints;
+        }
+
+        function calculateSmoothedTrend(data, timeFrameYears = null) {
+            if (data.length < 6) return [];
+            
+            // Filter data based on time frame if specified
+            let filteredData = data;
+            if (timeFrameYears && timeFrameYears !== 'all') {
+                const cutoffDate = new Date();
+                cutoffDate.setFullYear(cutoffDate.getFullYear() - parseInt(timeFrameYears));
+                filteredData = data.filter(item => item.date >= cutoffDate);
+            }
+            
+            if (filteredData.length < 6) return [];
+            
+            // Simple exponential smoothing - much faster than LOWESS
+            const sortedData = [...filteredData].sort((a, b) => a.date - b.date);
+            const alpha = 0.3; // Smoothing factor
+            const smoothed = [];
+            
+            // Initialize with first value
+            let smoothedValue = sortedData[0].price;
+            smoothed.push({
+                x: sortedData[0].date,
+                y: smoothedValue
+            });
+            
+            // Apply exponential smoothing
+            for (let i = 1; i < sortedData.length; i++) {
+                smoothedValue = alpha * sortedData[i].price + (1 - alpha) * smoothedValue;
+                smoothed.push({
+                    x: sortedData[i].date,
+                    y: smoothedValue
+                });
+            }
+            
+            return smoothed;
+        }
+
+        function calculateMovingAverageTrend(data, timeFrameYears = null) {
+            if (data.length < 12) return [];
+            
+            // Filter data based on time frame if specified
+            let filteredData = data;
+            if (timeFrameYears && timeFrameYears !== 'all') {
+                const cutoffDate = new Date();
+                cutoffDate.setFullYear(cutoffDate.getFullYear() - parseInt(timeFrameYears));
+                filteredData = data.filter(item => item.date >= cutoffDate);
+            }
+            
+            if (filteredData.length < 12) return [];
+            
+            // Sort by date and calculate rolling average
+            const sortedData = [...filteredData].sort((a, b) => a.date - b.date);
+            const windowSize = Math.min(12, Math.floor(sortedData.length / 8));
+            const movingAvg = [];
+            
+            for (let i = windowSize - 1; i < sortedData.length; i++) {
+                const window = sortedData.slice(i - windowSize + 1, i + 1);
+                const avgPrice = window.reduce((sum, item) => sum + item.price, 0) / window.length;
+                
+                movingAvg.push({
+                    x: sortedData[i].date,
+                    y: avgPrice
+                });
+            }
+            
+            return movingAvg;
         }
 
         function groupByQuarter(data) {
