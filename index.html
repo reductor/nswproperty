@@ -989,7 +989,11 @@
         
         function getPriceValue(item) {
             const pricingType = getCachedPricingMode();
-            return pricingType === 'per_sqm' ? (item.pricePerSqm || item.price) : item.price;
+            if (pricingType === 'per_sqm') {
+                // Only return pricePerSqm if it exists and is valid
+                return item._hasAreaData && item.pricePerSqm ? item.pricePerSqm : null;
+            }
+            return item.price;
         }
 
         function calculateLinearTrend(data, timeFrameYears = null) {
@@ -1005,11 +1009,13 @@
             
             if (filteredData.length < 2) return [];
             
-            // Convert dates to numeric values (time in milliseconds)
+            // Convert dates to numeric values (time in milliseconds) and filter out null price values
             const dataPoints = filteredData.map(item => ({
                 x: item.date.getTime(),
                 y: getPriceValue(item)
-            }));
+            })).filter(point => point.y !== null && point.y > 0); // Filter out null or zero prices
+            
+            if (dataPoints.length < 2) return []; // Need at least 2 valid points for trend
             
             // Calculate linear regression
             const n = dataPoints.length;
@@ -1022,6 +1028,12 @@
             const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
             const intercept = (sumY - slope * sumX) / n;
             
+            // Validate that we got valid slope and intercept
+            if (!isFinite(slope) || !isFinite(intercept)) {
+                console.log('Invalid trend calculation - slope or intercept is not finite');
+                return [];
+            }
+            
             // Create trend line data points - extend across the full original data range
             const sortedOriginalData = [...data].sort((a, b) => a.date - b.date);
             const startDate = sortedOriginalData[0].date;
@@ -1032,14 +1044,17 @@
             const extendedStart = new Date(startDate.getTime() - timeRange * 0.05);
             const extendedEnd = new Date(endDate.getTime() + timeRange * 0.05);
             
+            const startY = slope * extendedStart.getTime() + intercept;
+            const endY = slope * extendedEnd.getTime() + intercept;
+            
             return [
                 {
                     x: extendedStart,
-                    y: Math.max(1000, slope * extendedStart.getTime() + intercept) // Minimum $1000 to prevent zero values
+                    y: Math.max(0.1, startY) // Ensure positive values
                 },
                 {
                     x: extendedEnd,
-                    y: Math.max(1000, slope * extendedEnd.getTime() + intercept) // Minimum $1000 to prevent zero values
+                    y: Math.max(0.1, endY) // Ensure positive values
                 }
             ];
         }
@@ -1057,8 +1072,15 @@
             
             if (filteredData.length < 2) return [];
             
-            // Sort data to get earliest and latest points
-            const sortedData = [...filteredData].sort((a, b) => a.date - b.date);
+            // Sort data to get earliest and latest points with valid prices
+            const validData = filteredData.filter(item => {
+                const priceValue = getPriceValue(item);
+                return priceValue !== null && priceValue > 0;
+            });
+            
+            if (validData.length < 2) return [];
+            
+            const sortedData = [...validData].sort((a, b) => a.date - b.date);
             const startPoint = sortedData[0];
             const endPoint = sortedData[sortedData.length - 1];
             
@@ -1068,7 +1090,12 @@
             
             if (timeSpanYears <= 0) return [];
             
-            const cagr = Math.pow(getPriceValue(endPoint) / getPriceValue(startPoint), 1 / timeSpanYears);
+            const startPrice = getPriceValue(startPoint);
+            const endPrice = getPriceValue(endPoint);
+            
+            if (!startPrice || !endPrice || startPrice <= 0 || endPrice <= 0) return [];
+            
+            const cagr = Math.pow(endPrice / startPrice, 1 / timeSpanYears);
             
             // Create trend line points from start to end based on CAGR
             return [
