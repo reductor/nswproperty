@@ -253,6 +253,10 @@
             <canvas id="priceChart"></canvas>
         </div>
         
+        <div class="chart-container" style="margin-top: 20px; height: 300px;">
+            <canvas id="volumeChart"></canvas>
+        </div>
+        
         <div class="attribution">
             <h3>Data Source</h3>
             <p>This analysis uses NSW Valuer General's Bulk Property Sales Information, acquired on 16th January 2026.</p>
@@ -267,6 +271,7 @@
 
     <script>
         let chart = null;
+        let volumeChart = null;
         let localities = [];
 
         // Load localities on page load
@@ -334,6 +339,7 @@
                 }
                 
                 displayChart(result.data, selectedLocality);
+                displayVolumeChart(result.data, selectedLocality);
                 updateStats(result.data, result.outliersRemoved);
                 
                 // Setup event listeners
@@ -1097,6 +1103,31 @@
             }).sort((a, b) => a.x - b.x);
         }
 
+        function calculateTransactionVolume(data) {
+            if (!data || data.length === 0) return [];
+            
+            const monthlyGroups = {};
+            
+            data.forEach(item => {
+                const year = item.date.getFullYear();
+                const month = item.date.getMonth(); // 0-based
+                const key = `${year}-${String(month + 1).padStart(2, '0')}`;
+                
+                if (!monthlyGroups[key]) {
+                    monthlyGroups[key] = 0;
+                }
+                monthlyGroups[key]++;
+            });
+            
+            return Object.keys(monthlyGroups).map(key => {
+                const [year, month] = key.split('-').map(Number);
+                return {
+                    x: new Date(year, month - 1, 15), // Use mid-month
+                    y: monthlyGroups[key]
+                };
+            }).sort((a, b) => a.x - b.x);
+        }
+
         function calculateTrendGrowthRate(trendData, selectedTrendType, selectedTimeFrame) {
             if (!trendData || trendData.length < 2) {
                 console.log('Trend growth: insufficient data points', trendData?.length);
@@ -1242,6 +1273,66 @@
             return cagr * 100; // Convert to percentage
         }
 
+        function displayVolumeChart(data, locality) {
+            const ctx = document.getElementById('volumeChart').getContext('2d');
+            
+            if (volumeChart) {
+                volumeChart.destroy();
+            }
+            
+            // Calculate transaction volume by month
+            const volumeData = calculateTransactionVolume(data);
+            
+            // Create volume chart
+            volumeChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    datasets: [{
+                        label: 'Monthly Transaction Volume',
+                        data: volumeData,
+                        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'year',
+                                displayFormats: {
+                                    year: 'yyyy'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Transactions'
+                            },
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: `Transaction Volume in ${locality.toUpperCase()} (Monthly)`
+                        },
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+
         function updateStats(data, outliersRemoved = 0) {
             const totalSales = data.length;
             
@@ -1308,6 +1399,10 @@
             if (chart) {
                 chart.destroy();
                 chart = null;
+            }
+            if (volumeChart) {
+                volumeChart.destroy();
+                volumeChart = null;
             }
             document.getElementById('stats').style.display = 'none';
         }
