@@ -263,6 +263,14 @@
             <canvas id="volumeChart"></canvas>
         </div>
         
+        <div class="chart-container" style="margin-top: 20px; height: 600px;">
+            <canvas id="streetChart"></canvas>
+        </div>
+        
+        <div class="chart-container" style="margin-top: 20px; height: 600px;">
+            <canvas id="streetCountChart"></canvas>
+        </div>
+        
         <div class="attribution">
             <h3>Data Source</h3>
             <p>This analysis uses NSW Valuer General's Bulk Property Sales Information, acquired on 16th January 2026.</p>
@@ -278,6 +286,8 @@
     <script>
         let chart = null;
         let volumeChart = null;
+        let streetChart = null;
+        let streetCountChart = null;
         let localities = [];
 
         // Load localities on page load
@@ -346,6 +356,7 @@
                 
                 displayChart(result.data, selectedLocality);
                 displayVolumeChart(result.data, selectedLocality);
+                displayStreetChart(result.data, selectedLocality);
                 updateStats(result.data, result.outliersRemoved);
                 
                 // Setup event listeners
@@ -363,6 +374,7 @@
                     radio.onchange = () => {
                         invalidatePricingCache();
                         displayChart(result.data, selectedLocality);
+                        displayStreetChart(result.data, selectedLocality);
                         updateStats(result.data, result.outliersRemoved);
                     };
                 });
@@ -523,6 +535,7 @@
                         const propertyType = fields[18].trim(); // Field 19 (0-indexed as 18)
                         const areaStr = fields[11].trim(); // Field 12 (0-indexed as 11)
                         const areaType = fields[12].trim(); // Field 13 (0-indexed as 12)
+                        const streetName = fields[8].trim(); // Field 9 (0-indexed as 8)
                         
                         if (dateStr && priceStr && priceStr !== '0' && !isNaN(priceStr)) {
                             const date = parseDate(dateStr);
@@ -534,6 +547,7 @@
                                     date, 
                                     price, 
                                     propertyType,
+                                    streetName,
                                     area: null,
                                     areaType: null,
                                     _pricePerSqm: null,
@@ -1477,6 +1491,440 @@
                     }
                 }
             });
+        }
+
+        function displayStreetChart(data, locality) {
+            console.log('displayStreetChart called with data length:', data.length);
+            const pricingType = getCachedPricingMode();
+            console.log('Pricing type:', pricingType);
+            
+            // Always show street chart container
+            document.getElementById('streetChart').parentElement.style.display = 'block';
+            
+            // Filter to last 2 years
+            const cutoffDate = new Date();
+            cutoffDate.setFullYear(cutoffDate.getFullYear() - 2);
+            console.log('Cutoff date:', cutoffDate);
+            
+            let recentData;
+            if (pricingType === 'per_sqm') {
+                // For per sqm mode, filter to properties with area data
+                recentData = data.filter(item => 
+                    item.date >= cutoffDate && 
+                    item._hasAreaData && 
+                    item.pricePerSqm &&
+                    item.pricePerSqm > 0
+                );
+            } else {
+                // For total price mode, use all recent data
+                recentData = data.filter(item => item.date >= cutoffDate);
+            }
+            
+            console.log('Recent data length:', recentData.length);
+            
+            if (recentData.length === 0) {
+                console.log('No recent data available');
+                const ctx = document.getElementById('streetChart').getContext('2d');
+                if (streetChart) {
+                    streetChart.destroy();
+                }
+                console.log('No recent street data available for analysis');
+                return;
+            }
+            
+            // Split by property type first
+            const residentialData = recentData.filter(item => item.propertyType === 'RESIDENCE');
+            const landData = recentData.filter(item => item.propertyType === 'VACANT LAND');
+            
+            console.log('Property type counts:', { residential: residentialData.length, land: landData.length, other: recentData.length - residentialData.length - landData.length });
+            
+            // Choose the larger dataset for the primary analysis, or residential if both are small
+            const primaryData = residentialData.length >= landData.length ? residentialData : landData;
+            const primaryType = residentialData.length >= landData.length ? 'RESIDENCE' : 'VACANT LAND';
+            
+            // Use residential data if available, otherwise fall back to land
+            const analysisData = residentialData.length >= 3 ? residentialData : 
+                                landData.length >= 3 ? landData : recentData;
+            const analysisType = residentialData.length >= 3 ? 'RESIDENCE' : 
+                               landData.length >= 3 ? 'VACANT LAND' : 'ALL PROPERTIES';
+            
+            console.log('Analysis decision:', { type: analysisType, dataLength: analysisData.length });
+            
+            if (analysisData.length === 0) {
+                console.log('No analysis data available');
+                const ctx = document.getElementById('streetChart').getContext('2d');
+                if (streetChart) {
+                    streetChart.destroy();
+                }
+                console.log('No street data available for analysis');
+                return;
+            }
+            
+            // Group by street name for the chosen property type
+            const streetGroups = {};
+            
+            // Group priced properties for average calculations
+            analysisData.forEach(item => {
+                const street = item.streetName || 'Unknown Street';
+                
+                if (!streetGroups[street]) {
+                    streetGroups[street] = [];
+                }
+                
+                // Use appropriate price value based on mode
+                const priceValue = pricingType === 'per_sqm' ? item.pricePerSqm : item.price;
+                streetGroups[street].push(priceValue);
+            });
+            
+            console.log('Street groups created:', Object.keys(streetGroups).length, 'streets');
+            console.log('Streets found:', Object.keys(streetGroups));
+            
+            // Calculate average price per sqm for each street
+            let streetStats = Object.entries(streetGroups)
+                .map(([street, prices]) => ({
+                    street: street,
+                    avgPrice: prices.reduce((sum, p) => sum + p, 0) / prices.length,
+                    count: prices.length
+                }))
+                .filter(street => street.count >= 3) // Only streets with 3+ sales for better quality
+                .sort((a, b) => a.avgPrice - b.avgPrice); // Sort by price (lowest first)
+            
+            console.log('Street stats after filtering (3+ sales):', streetStats.length);
+            
+            if (streetStats.length === 0) {
+                console.log('No streets with sufficient sales data (3+ sales required)');
+                // Try with 2+ sales minimum
+                streetStats = Object.entries(streetGroups)
+                    .map(([street, prices]) => ({
+                        street: street,
+                        avgPrice: prices.reduce((sum, p) => sum + p, 0) / prices.length,
+                        count: prices.length
+                    }))
+                    .filter(street => street.count >= 2) // Only streets with 2+ sales
+                    .sort((a, b) => a.avgPrice - b.avgPrice);
+                    
+                console.log('Trying with 2+ sales minimum:', streetStats.length);
+                
+                if (streetStats.length === 0) {
+                    return;
+                }
+            }
+            
+            // Limit to top 20 streets for readability (10 cheapest + 10 most expensive)
+            let cheapestStreets = [];
+            let expensiveStreets = [];
+            
+            if (streetStats.length > 20) {
+                cheapestStreets = streetStats.slice(0, 10);
+                expensiveStreets = streetStats.slice(-10);
+                console.log('Split into cheapest and most expensive streets for readability');
+            } else if (streetStats.length > 10) {
+                // If between 10-20 streets, split them roughly in half
+                const midPoint = Math.ceil(streetStats.length / 2);
+                cheapestStreets = streetStats.slice(0, midPoint);
+                expensiveStreets = streetStats.slice(midPoint);
+            } else {
+                // If 10 or fewer streets, show all in the first chart
+                cheapestStreets = streetStats;
+                expensiveStreets = [];
+            }
+            
+            // Calculate suburb average
+            const allPrices = Object.values(streetGroups).flat();
+            const suburbAvg = allPrices.reduce((sum, p) => sum + p, 0) / allPrices.length;
+            
+            // Set appropriate labels based on pricing mode and property type (shared by both charts)
+            const priceLabel = pricingType === 'per_sqm' ? 'Price per m²' : 'Total Price';
+            const typeLabel = analysisType === 'ALL PROPERTIES' ? '' : ` - ${analysisType}`;
+            const yAxisLabel = pricingType === 'per_sqm' ? 'Price Per Square Meter ($)' : 'Price ($)';
+            const avgLabel = pricingType === 'per_sqm' ? 
+                `$${Math.round(suburbAvg).toLocaleString()}/m²` : 
+                `$${Math.round(suburbAvg).toLocaleString()}`;
+            
+            // Create first chart for cheapest streets
+            if (cheapestStreets.length > 0) {
+                const labels = cheapestStreets.map(s => `${s.street} (${s.count})`);
+                const prices = cheapestStreets.map(s => s.avgPrice);
+                const percentages = cheapestStreets.map(s => ((s.avgPrice - suburbAvg) / suburbAvg * 100));
+                
+                // Color code: red for below average, green for above average
+                const backgroundColors = percentages.map(pct => 
+                    pct < 0 ? 'rgba(255, 99, 132, 0.7)' : 'rgba(75, 192, 192, 0.7)'
+                );
+                const borderColors = percentages.map(pct => 
+                    pct < 0 ? 'rgba(255, 99, 132, 1)' : 'rgba(75, 192, 192, 1)'
+                );
+                
+                const chartTitle = `${locality.replace(/_/g, ' ')}: Cheapest Streets - ${priceLabel} (Last 2 Years)${typeLabel}`;
+                
+                console.log(`Street analysis: Using ${analysisData.length} ${analysisType} properties from ${Object.keys(streetGroups).length} streets`);
+                console.log(`Property type breakdown: ${residentialData.length} RESIDENCE, ${landData.length} VACANT LAND, ${recentData.length - residentialData.length - landData.length} other types`);
+                
+                if (streetChart) {
+                    streetChart.destroy();
+                }
+                
+                console.log('Creating cheapest streets chart with data:', { streets: cheapestStreets.length, prices: prices.slice(0, 5) });
+                
+                const ctx = document.getElementById('streetChart').getContext('2d');
+                try {
+                streetChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: priceLabel,
+                        data: prices,
+                        backgroundColor: backgroundColors,
+                        borderColor: borderColors,
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    indexAxis: 'y', // Horizontal bars
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle,
+                            font: {
+                                size: 14
+                            }
+                        },
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const price = pricingType === 'per_sqm' ? 
+                                        '$' + Math.round(context.parsed.x).toLocaleString() + '/m²' :
+                                        '$' + context.parsed.x.toLocaleString();
+                                    const pct = percentages[context.dataIndex];
+                                    const direction = pct >= 0 ? 'above' : 'below';
+                                    return [`${price}`, `${Math.abs(pct).toFixed(1)}% ${direction} suburb average (${avgLabel})`];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: yAxisLabel
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    if (pricingType === 'per_sqm') {
+                                        return '$' + Math.round(value).toLocaleString();
+                                    } else {
+                                        return '$' + value.toLocaleString();
+                                    }
+                                }
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Street'
+                            },
+                            ticks: {
+                                font: {
+                                    size: 10
+                                },
+                                maxRotation: 0
+                            }
+                        }
+                    },
+                    // Custom plugin to add percentage labels
+                    interaction: {
+                        intersect: false,
+                        mode: 'nearest'
+                    }
+                },
+                plugins: [{
+                    id: 'customLabels',
+                    afterDatasetsDraw: function(chart) {
+                        const ctx = chart.ctx;
+                        ctx.save();
+                        ctx.font = '11px Arial';
+                        ctx.fillStyle = 'black';
+                        ctx.textAlign = 'left';
+                        
+                        chart.data.datasets[0].data.forEach((value, index) => {
+                            const meta = chart.getDatasetMeta(0);
+                            const bar = meta.data[index];
+                            const pct = percentages[index];
+                            let label;
+                            
+                            if (pricingType === 'per_sqm') {
+                                label = `$${Math.round(value).toLocaleString()} (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)`;
+                            } else {
+                                label = `$${Math.round(value).toLocaleString()} (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)`;
+                            }
+                            
+                            // Position label to the right of the bar
+                            ctx.fillText(label, bar.x + 10, bar.y + 5);
+                        });
+                        
+                        ctx.restore();
+                    }
+                }]
+            });
+            console.log('Cheapest streets chart created successfully');
+            } catch (error) {
+                console.error('Error creating cheapest streets chart:', error);
+            }
+        }
+
+        // Create the second chart showing most expensive streets  
+            if (expensiveStreets.length > 0) {
+                try {
+                    if (streetCountChart) {
+                        streetCountChart.destroy();
+                    }
+                    
+                    const expensiveLabels = expensiveStreets.map(s => `${s.street} (${s.count})`);
+                    const expensivePrices = expensiveStreets.map(s => s.avgPrice);
+                    const expensivePercentages = expensiveStreets.map(s => ((s.avgPrice - suburbAvg) / suburbAvg * 100));
+                    
+                    // Color code: red for below average, green for above average  
+                    const expensiveBackgroundColors = expensivePercentages.map(pct => 
+                        pct < 0 ? 'rgba(255, 99, 132, 0.7)' : 'rgba(75, 192, 192, 0.7)'
+                    );
+                    const expensiveBorderColors = expensivePercentages.map(pct => 
+                        pct < 0 ? 'rgba(255, 99, 132, 1)' : 'rgba(75, 192, 192, 1)'
+                    );
+                    
+                    const expensiveChartTitle = `${locality.replace(/_/g, ' ')}: Most Expensive Streets - ${priceLabel} (Last 2 Years)${typeLabel}`;
+                    
+                    const expensiveCtx = document.getElementById('streetCountChart').getContext('2d');
+                    
+                    streetCountChart = new Chart(expensiveCtx, {
+                        type: 'bar',
+                        data: {
+                            labels: expensiveLabels,
+                            datasets: [{
+                                label: priceLabel,
+                                data: expensivePrices,
+                                backgroundColor: expensiveBackgroundColors,
+                                borderColor: expensiveBorderColors,
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            indexAxis: 'y', // Horizontal bars
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            layout: {
+                                padding: {
+                                    left: 10,
+                                    right: 50
+                                }
+                            },
+                            plugins: {
+                                title: {
+                                    display: true,
+                                    text: expensiveChartTitle,
+                                    font: {
+                                        size: 14
+                                    }
+                                },
+                                legend: {
+                                    display: false
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const price = pricingType === 'per_sqm' ? 
+                                                '$' + Math.round(context.parsed.x).toLocaleString() + '/m²' :
+                                                '$' + context.parsed.x.toLocaleString();
+                                            const pct = expensivePercentages[context.dataIndex];
+                                            const direction = pct >= 0 ? 'above' : 'below';
+                                            return [`${price}`, `${Math.abs(pct).toFixed(1)}% ${direction} suburb average (${avgLabel})`];
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: yAxisLabel
+                                    },
+                                    ticks: {
+                                        callback: function(value) {
+                                            if (pricingType === 'per_sqm') {
+                                                return '$' + Math.round(value).toLocaleString();
+                                            } else {
+                                                return '$' + value.toLocaleString();
+                                            }
+                                        }
+                                    }
+                                },
+                                y: {
+                                    title: {
+                                        display: true,
+                                        text: 'Street'
+                                    },
+                                    ticks: {
+                                        font: {
+                                            size: 10
+                                        },
+                                        maxRotation: 0
+                                    }
+                                }
+                            },
+                            // Custom plugin to add percentage labels
+                            interaction: {
+                                intersect: false,
+                                mode: 'nearest'
+                            }
+                        },
+                        plugins: [{
+                            id: 'expensiveLabels',
+                            afterDatasetsDraw: function(chart) {
+                                const ctx = chart.ctx;
+                                ctx.save();
+                                
+                                ctx.font = '12px Arial';
+                                ctx.fillStyle = '#333';
+                                ctx.textAlign = 'left';
+                                
+                                chart.data.datasets[0].data.forEach((value, index) => {
+                                    const bar = chart.getDatasetMeta(0).data[index];
+                                    const pct = expensivePercentages[index];
+                                    
+                                    let label;
+                                    
+                                    if (pricingType === 'per_sqm') {
+                                        label = `$${Math.round(value).toLocaleString()} (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)`;
+                                    } else {
+                                        label = `$${Math.round(value).toLocaleString()} (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)`;
+                                    }
+                                    
+                                    // Position label to the right of the bar
+                                    ctx.fillText(label, bar.x + 10, bar.y + 5);
+                                });
+                                
+                                ctx.restore();
+                            }
+                        }]
+                    });
+                    console.log('Most expensive streets chart created successfully');
+                } catch (error) {
+                    console.error('Error creating most expensive streets chart:', error);
+                }
+            } else {
+                // If no expensive streets to show, hide the second chart
+                if (streetCountChart) {
+                    streetCountChart.destroy();
+                }
+                console.log('No expensive streets to display in second chart');
+            }
         }
 
         function updateStats(data, outliersRemoved = 0) {
