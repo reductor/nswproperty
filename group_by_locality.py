@@ -38,14 +38,14 @@ def detect_archive_field_structure(file_path, sample_size=10):
             if b_records:
                 # Analyze field structure
                 avg_fields = sum(len(record) for record in b_records) / len(b_records)
-                print(f"Archive file {file_path}: avg {avg_fields:.1f} fields per B record")
+                tqdm.write(f"Archive file {file_path}: avg {avg_fields:.1f} fields per B record")
                 return True
             else:
-                print(f"Archive file {file_path}: no B records found")
+                tqdm.write(f"Archive file {file_path}: no B records found")
                 return False
                 
     except Exception as e:
-        print(f"Error analyzing {file_path}: {e}")
+        tqdm.write(f"Error analyzing {file_path}: {e}")
         return False
 
 def convert_archive_to_standard_format(line):
@@ -134,17 +134,17 @@ def process_dat_files():
         else:
             regular_files.append(file_path)
     
-    print(f"Found {len(all_dat_files)} total .DAT files:")
-    print(f"  - {len(regular_files)} regular files")
-    print(f"  - {len(archive_files)} archive files")
+    tqdm.write(f"Found {len(all_dat_files)} total .DAT files:")
+    tqdm.write(f"  - {len(regular_files)} regular files")
+    tqdm.write(f"  - {len(archive_files)} archive files")
     
     # Analyze archive files if they exist
     if archive_files:
-        print(f"\nAnalyzing archive file structure...")
+        tqdm.write(f"\nAnalyzing archive file structure...")
         for archive_file in archive_files[:3]:  # Just analyze first few
             detect_archive_field_structure(archive_file)
     
-    print(f"Processing all files...")
+    tqdm.write(f"Processing all files...")
     
     processed_files = 0
     total_records = 0
@@ -183,10 +183,14 @@ def process_dat_files():
                         # Check if we have at least 10 fields (locality is 10th field, index 9)
                         if len(fields) >= 10:
                             locality = fields[9].strip()
+
+                            # Create a safe filename from locality name
+                            safe_locality_name = "".join(c for c in locality if c.isalnum() or c in (' ', '-', '_')).strip()
+                            safe_locality_name = safe_locality_name.replace(' ', '_')
                             
                             # Only process if locality is not empty
-                            if locality:
-                                locality_records[locality].append(line)
+                            if safe_locality_name:
+                                locality_records[safe_locality_name].append(line)
                                 total_records += 1
                                 file_records += 1
             
@@ -199,17 +203,13 @@ def process_dat_files():
             error_files += 1
             tqdm.write(f"Error processing {dat_file}: {e}")
     
-    print(f"\nProcessed {processed_files} files successfully, {error_files} files had errors")
-    print(f"Found {total_records} total records")
-    print(f"Found {len(locality_records)} unique localities")
+    tqdm.write(f"\nProcessed {processed_files} files successfully, {error_files} files had errors")
+    tqdm.write(f"Found {total_records} total records")
+    tqdm.write(f"Found {len(locality_records)} unique localities")
     
     # Write records to separate files for each locality
-    print(f"\nWriting locality files...")
-    for locality, records in tqdm(locality_records.items(), desc="Creating locality files", unit="locality"):
-        # Create a safe filename from locality name
-        safe_locality_name = "".join(c for c in locality if c.isalnum() or c in (' ', '-', '_')).strip()
-        safe_locality_name = safe_locality_name.replace(' ', '_')
-        
+    tqdm.write(f"\nWriting locality files...")
+    for safe_locality_name, records in tqdm(locality_records.items(), desc="Creating locality files", unit="locality"):
         if safe_locality_name:  # Make sure we have a valid filename
             output_file = os.path.join(localities_folder, f"{safe_locality_name}.DAT")
             
@@ -218,12 +218,12 @@ def process_dat_files():
                     for record in records:
                         file.write(record + '\n')
                 
-                print(f"Created {output_file} with {len(records)} records")
+                tqdm.write(f"Created {output_file} with {len(records)} records")
                 
             except Exception as e:
-                print(f"Error writing to {output_file}: {e}")
+                tqdm.write(f"Error writing to {output_file}: {e}")
     
-    print("Processing complete!")
+    tqdm.write("Processing complete!")
 
 if __name__ == "__main__":
     process_dat_files()
